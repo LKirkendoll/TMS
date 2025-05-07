@@ -1,512 +1,410 @@
-# TMS_GUI.ps1
-# Main script to launch the TMS GUI Application. This is the primary entry point.
+<#
+.SYNOPSIS
+GUI Front-end for the Transportation Management System Tool.
+Uses Windows Forms and leverages existing TMS PowerShell modules.
+Broker logs in (from user_accounts), then selects a customer (from customer_accounts) to work with.
+Includes Quote, Settings, and Reports tabs.
+#>
 
-# --- Determine Script Root and Scope it ---
-$script:scriptRoot = $null # Initialize with script scope
+# --- Load Required Assemblies ---
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+} catch {
+    [System.Windows.Forms.MessageBox]::Show("Failed to load required .NET Assemblies (System.Windows.Forms, System.Drawing). Ensure .NET Framework is available.", "Fatal Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    Exit 1
+}
+
+# --- Determine Script Root ---
+$script:scriptRoot = $null
 if ($PSScriptRoot) { $script:scriptRoot = $PSScriptRoot }
 elseif ($MyInvocation.MyCommand.Path) { $script:scriptRoot = Split-Path $MyInvocation.MyCommand.Path -Parent }
 else {
-    Write-Error "FATAL: Cannot determine script root directory. GUI cannot start."
-    Read-Host "Press Enter to exit..."
-    exit 1
+    [System.Windows.Forms.MessageBox]::Show("FATAL: Cannot determine script root directory.", "Fatal Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    Exit 1
 }
-Write-Verbose "Script Root Determined for GUI: '$script:scriptRoot'"
+Write-Verbose "Script Root: '$script:scriptRoot'"
 
 # --- Dot-Source Module Files ---
-Write-Verbose "Starting GUI: Loading core TMS modules..."
+Write-Verbose "Loading TMS Modules..."
 try {
-    $configPath = Join-Path $script:scriptRoot "TMS_Config.ps1"; . $configPath
-    Write-Verbose "GUI: Successfully dot-sourced TMS_Config.ps1."
+    # <<< MODIFICATION: Updated module list for split helpers >>>
     $moduleFiles = @(
-        "TMS_Helpers.ps1", "TMS_Auth.ps1", "TMS_Carrier_Central.ps1", "TMS_Carrier_SAIA.ps1",
-        "TMS_Carrier_RL.ps1", "TMS_Carrier_Averitt.ps1", "TMS_Reports.ps1",
-        "TMS_Single_Quote.ps1", "TMS_Settings.ps1"
+        "TMS_Config.ps1",
+        "TMS_Helpers_General.ps1",   # General utilities
+        "TMS_GUI_Helpers.ps1",       # GUI-specific helpers
+        "TMS_Auth.ps1",
+        "TMS_Helpers_Central.ps1",   # Central-specific helpers
+        "TMS_Helpers_SAIA.ps1",      # SAIA-specific helpers
+        "TMS_Helpers_RL.ps1",        # R+L-specific helpers
+        "TMS_Carrier_Central.ps1", 
+        "TMS_Carrier_SAIA.ps1",    
+        "TMS_Carrier_RL.ps1",      
+        "TMS_Reports.ps1",
+        "TMS_Settings.ps1"         
     )
+    # <<< END MODIFICATION >>>
+
     foreach ($moduleFile in $moduleFiles) {
         $modulePath = Join-Path $script:scriptRoot $moduleFile
-        if (-not (Test-Path $modulePath -PathType Leaf)) { throw "GUI FATAL: Module '$moduleFile' not found." }
-        . $modulePath; Write-Verbose "GUI: Successfully dot-sourced '$moduleFile'."
-    }
-     Write-Verbose "GUI: All core TMS modules loaded successfully."
-} catch {
-    Write-Error "GUI: FATAL ERROR loading modules: $($_.Exception.Message)"; Read-Host "Press Enter..."; exit 1
-}
+        Write-Host "DEBUG: Attempting to load module '$moduleFile' from '$modulePath'"
+        if (-not (Test-Path $modulePath -PathType Leaf)) { throw "Module not found: '$moduleFile' at '$modulePath'" }
 
-# --- Global Variables for GUI State ---
-$Global:currentUserProfile = $null; $Global:allCentralKeys = $null; $Global:allSAIAKeys = $null
-$Global:allRLKeys = $null; $Global:allAverittKeys = $null; $Global:currentUserReportsFolder = $null
-$Global:customerProfiles = $null
+        try {
+            . $modulePath
+            Write-Host "DEBUG: Successfully dot-sourced '$moduleFile'."
+            # --- Check for required functions immediately after loading relevant modules ---
+            if ($moduleFile -eq "TMS_Auth.ps1") {
+                if (-not (Get-Command Test-PasswordHash -ErrorAction SilentlyContinue)) { throw "Required function 'Test-PasswordHash' not found immediately after loading TMS_Auth.ps1." }
+                if (-not (Get-Command Load-AllCustomerProfiles -ErrorAction SilentlyContinue)) { throw "Required function 'Load-AllCustomerProfiles' not found immediately after loading TMS_Auth.ps1." }
+            }
+             if ($moduleFile -eq "TMS_Settings.ps1") {
+                 if (-not (Get-Command Update-TariffMargin -ErrorAction SilentlyContinue)) { throw "Required function 'Update-TariffMargin' not found immediately after loading TMS_Settings.ps1." }
+             }
+             # <<< MODIFICATION: Updated checks for split helper files >>>
+             if ($moduleFile -eq "TMS_Helpers_General.ps1") {
+                  if (-not (Get-Command Get-PermittedKeys -ErrorAction SilentlyContinue)) { throw "Required function 'Get-PermittedKeys' not found in TMS_Helpers_General.ps1." }
+                  if (-not (Get-Command Select-CsvFile -ErrorAction SilentlyContinue)) { throw "Required function 'Select-CsvFile' not found in TMS_Helpers_General.ps1." }
+                  if (-not (Get-Command Open-FileExplorer -ErrorAction SilentlyContinue)) { throw "Required function 'Open-FileExplorer' not found in TMS_Helpers_General.ps1." }
+                  if (-not (Get-Command Load-KeysFromFolder -ErrorAction SilentlyContinue)) { throw "Required function 'Load-KeysFromFolder' not found in TMS_Helpers_General.ps1." }
+             }
+             if ($moduleFile -eq "TMS_GUI_Helpers.ps1") {
+                  if (-not (Get-Command Populate-TariffListBox -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-TariffListBox' not found in TMS_GUI_Helpers.ps1." }
+                  if (-not (Get-Command Populate-ReportTariffListBoxes -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-ReportTariffListBoxes' not found in TMS_GUI_Helpers.ps1." }
+             }
+             if ($moduleFile -eq "TMS_Helpers_Central.ps1") {
+                 if (-not (Get-Command Invoke-CentralTransportApi -ErrorAction SilentlyContinue)) { throw "Required function 'Invoke-CentralTransportApi' not found in TMS_Helpers_Central.ps1."}
+                 if (-not (Get-Command Load-And-Normalize-CentralData -ErrorAction SilentlyContinue)) { throw "Required function 'Load-And-Normalize-CentralData' not found in TMS_Helpers_Central.ps1."}
+             }
+             if ($moduleFile -eq "TMS_Helpers_SAIA.ps1") {
+                 if (-not (Get-Command Invoke-SAIAApi -ErrorAction SilentlyContinue)) { throw "Required function 'Invoke-SAIAApi' not found in TMS_Helpers_SAIA.ps1."}
+                 if (-not (Get-Command Load-And-Normalize-SAIAData -ErrorAction SilentlyContinue)) { throw "Required function 'Load-And-Normalize-SAIAData' not found in TMS_Helpers_SAIA.ps1."}
+             }
+             if ($moduleFile -eq "TMS_Helpers_RL.ps1") {
+                 if (-not (Get-Command Invoke-RLApi -ErrorAction SilentlyContinue)) { throw "Required function 'Invoke-RLApi' not found in TMS_Helpers_RL.ps1."}
+                 if (-not (Get-Command Load-And-Normalize-RLData -ErrorAction SilentlyContinue)) { throw "Required function 'Load-And-Normalize-RLData' not found in TMS_Helpers_RL.ps1."}
+             }
+             # <<< END MODIFICATION >>>
+             if ($moduleFile -eq "TMS_Carrier_Central.ps1") { if (-not (Get-Command Run-CentralComparisonReportGUI -ErrorAction SilentlyContinue)) { throw "Required function 'Run-CentralComparisonReportGUI' not found." } }
+             if ($moduleFile -eq "TMS_Carrier_SAIA.ps1") { if (-not (Get-Command Run-SAIAComparisonReportGUI -ErrorAction SilentlyContinue)) { throw "Required function 'Run-SAIAComparisonReportGUI' not found." } }
+             if ($moduleFile -eq "TMS_Carrier_RL.ps1") { if (-not (Get-Command Run-RLComparisonReportGUI -ErrorAction SilentlyContinue)) { throw "Required function 'Run-RLComparisonReportGUI' not found." } }
+             if ($moduleFile -eq "TMS_Reports.ps1") {
+                 if (-not (Get-Command Run-CrossCarrierASPAnalysisGUI -ErrorAction SilentlyContinue)) { throw "Required function 'Run-CrossCarrierASPAnalysisGUI' not found." }
+                 if (-not (Get-Command Run-MarginsByHistoryAnalysisGUI -ErrorAction SilentlyContinue)) { throw "Required function 'Run-MarginsByHistoryAnalysisGUI' not found." } 
+             }
+        } catch { Write-Error "ERROR loading module '$moduleFile': $($_.Exception.Message)"; throw $_ }
+    }
+    # --- Final Verification AFTER loop (Add more as needed) ---
+    if (-not (Get-Command Update-TariffMargin -ErrorAction SilentlyContinue)) { throw "Required function 'Update-TariffMargin' not found AFTER loop." }
+    if (-not (Get-Command Populate-TariffListBox -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-TariffListBox' from TMS_GUI_Helpers.ps1 not found AFTER loop."}
+    if (-not (Get-Command Load-KeysFromFolder -ErrorAction SilentlyContinue)) { throw "Required function 'Load-KeysFromFolder' from TMS_Helpers_General.ps1 not found AFTER loop."}
+    if (-not (Get-Command Invoke-CentralTransportApi -ErrorAction SilentlyContinue)) { throw "Required function 'Invoke-CentralTransportApi' from TMS_Helpers_Central.ps1 not found AFTER loop."}
+
+
+    Write-Verbose "Module loading complete."
+} catch {
+     $errorMessage = "FATAL: Failed to load a module or required function. GUI cannot start.`nError: $($_.Exception.Message)"; Write-Error $errorMessage; [System.Windows.Forms.MessageBox]::Show($errorMessage, "Module Load Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); Exit 1
+}
 
 # --- Resolve Full Paths for Data Folders ---
-$script:centralKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultCentralKeysFolderName
-$script:saiaKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultSAIAKeysFolderName
-$script:rlKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultRLKeysFolderName
-$script:averittKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultAverittKeysFolderName
-$script:userAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultUserAccountsFolderName
-$script:customerAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultCustomerAccountsFolderName
-$script:reportsBaseFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultReportsBaseFolderName
-$script:shipmentDataFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $script:defaultShipmentDataFolderName
+$CentralKeysFolderName = $script:defaultCentralKeysFolderName; $SAIAKeysFolderName = $script:defaultSAIAKeysFolderName; $RLKeysFolderName = $script:defaultRLKeysFolderName
+$UserAccountsFolderName = $script:defaultUserAccountsFolderName; $CustomerAccountsFolderName = $script:defaultCustomerAccountsFolderName
+$ReportsBaseFolderName = $script:defaultReportsBaseFolderName; $ShipmentDataFolderName = $script:defaultShipmentDataFolderName
+$script:centralKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $CentralKeysFolderName; $script:saiaKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $SAIAKeysFolderName; $script:rlKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $RLKeysFolderName
+$script:userAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $UserAccountsFolderName; $script:customerAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $CustomerAccountsFolderName
+$script:reportsBaseFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $ReportsBaseFolderName; $script:shipmentDataFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $ShipmentDataFolderName
 
-# --- Ensure Required Base Data Folders Exist ---
-Write-Verbose "GUI: Ensuring base data directories exist..."
-Ensure-DirectoryExists -Path $script:centralKeysFolderPath; Ensure-DirectoryExists -Path $script:saiaKeysFolderPath
-Ensure-DirectoryExists -Path $script:rlKeysFolderPath; Ensure-DirectoryExists -Path $script:averittKeysFolderPath
-Ensure-DirectoryExists -Path $script:userAccountsFolderPath; Ensure-DirectoryExists -Path $script:customerAccountsFolderPath
-Ensure-DirectoryExists -Path $script:reportsBaseFolderPath; Ensure-DirectoryExists -Path $script:shipmentDataFolderPath
-Write-Verbose "GUI: Base directory check complete."
+# --- Ensure Required Base Folders Exist ---
+Write-Verbose "Ensuring base data directories exist..."
+try { Ensure-DirectoryExists -Path $script:centralKeysFolderPath; Ensure-DirectoryExists -Path $script:saiaKeysFolderPath; Ensure-DirectoryExists -Path $script:rlKeysFolderPath; Ensure-DirectoryExists -Path $script:userAccountsFolderPath; Ensure-DirectoryExists -Path $script:customerAccountsFolderPath; Ensure-DirectoryExists -Path $script:reportsBaseFolderPath; Ensure-DirectoryExists -Path $script:shipmentDataFolderPath }
+catch { $errorMessage = "FATAL: Failed to ensure required data directories exist.`nError: $($_.Exception.Message)"; Write-Error $errorMessage; [System.Windows.Forms.MessageBox]::Show($errorMessage, "Directory Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); Exit 1 }
+Write-Verbose "Base directory check complete."
 
-# --- Pre-load All Carrier Keys and Customer Profiles ---
-Write-Host "`nInitializing TMS GUI Application..." -ForegroundColor Yellow
-$Global:allCentralKeys = Load-KeysFromFolder -KeysFolderPath $script:centralKeysFolderPath -CarrierName "Central Transport"
-$Global:allSAIAKeys = Load-KeysFromFolder -KeysFolderPath $script:saiaKeysFolderPath -CarrierName "SAIA"
-$Global:allRLKeys = Load-KeysFromFolder -KeysFolderPath $script:rlKeysFolderPath -CarrierName "RL Carriers"
-$Global:allAverittKeys = Load-KeysFromFolder -KeysFolderPath $script:averittKeysFolderPath -CarrierName "Averitt"
-Write-Host "Carrier Key loading complete."
-$Global:customerProfiles = Load-AllCustomerProfiles -CustomerAccountsFolderPath $script:customerAccountsFolderPath
-Write-Host "Customer profile loading complete. $($Global:customerProfiles.Count) profiles loaded."
-
-Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
-
-# --- Login Window Function (Restored Full Version with Fix) ---
-function Show-LoginWindow {
-    Write-Host "DEBUG (GUI): Show-LoginWindow (Full) called."
-    $loginForm = New-Object System.Windows.Forms.Form
-    $loginForm.Text = "TMS Login"
-    $loginForm.Size = New-Object System.Drawing.Size(320, 230) 
-    $loginForm.StartPosition = "CenterScreen"
-    $loginForm.FormBorderStyle = 'FixedDialog'
-    $loginForm.MaximizeBox = $false
-    $loginForm.MinimizeBox = $false
-    $loginForm.CancelButton = $null 
-
-    $labelUser = New-Object System.Windows.Forms.Label; $labelUser.Text = "Username:"; $labelUser.Location = New-Object System.Drawing.Point(20, 20); $labelUser.Size = New-Object System.Drawing.Size(80, 20); $loginForm.Controls.Add($labelUser)
-    $textUser = New-Object System.Windows.Forms.TextBox; $textUser.Location = New-Object System.Drawing.Point(100, 20); $textUser.Size = New-Object System.Drawing.Size(180, 20); $textUser.TabIndex = 0; $loginForm.Controls.Add($textUser)
-    $labelPass = New-Object System.Windows.Forms.Label; $labelPass.Text = "Password:"; $labelPass.Location = New-Object System.Drawing.Point(20, 55); $labelPass.Size = New-Object System.Drawing.Size(80, 20); $loginForm.Controls.Add($labelPass)
-    $textPass = New-Object System.Windows.Forms.TextBox; $textPass.Location = New-Object System.Drawing.Point(100, 55); $textPass.Size = New-Object System.Drawing.Size(180, 20); $textPass.PasswordChar = '*'; $textPass.TabIndex = 1; $loginForm.Controls.Add($textPass)
-    $messageLabel = New-Object System.Windows.Forms.Label; $messageLabel.Location = New-Object System.Drawing.Point(20, 90); $messageLabel.Size = New-Object System.Drawing.Size(260, 40); $messageLabel.ForeColor = [System.Drawing.Color]::Red; $loginForm.Controls.Add($messageLabel)
-    $loginButton = New-Object System.Windows.Forms.Button; $loginButton.Text = "Login"; $loginButton.Location = New-Object System.Drawing.Point(110, 145); $loginButton.Size = New-Object System.Drawing.Size(100, 30); $loginButton.TabIndex = 2; $loginForm.AcceptButton = $loginButton; $loginForm.Controls.Add($loginButton)
-    
-    $loginButton.Add_Click({
-        Write-Host "DEBUG (GUI): Login button clicked. Username: '$($textUser.Text)'" 
-        $username = $textUser.Text; $passwordPlainText = $textPass.Text
-        if ([string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($passwordPlainText)) {
-            $messageLabel.Text = "Username and Password are required."; Write-Host "DEBUG (GUI): Username or Password empty."; return 
-        }
-        Write-Host "DEBUG (GUI): Calling Authenticate-User. UserAccountsFolderPath: '$($script:userAccountsFolderPath)'" 
-        $Global:currentUserProfile = Authenticate-User -Username $username -PasswordPlainText $passwordPlainText -UserAccountsFolderPath $script:userAccountsFolderPath
-        if ($Global:currentUserProfile -ne $null) {
-            Write-Host "DEBUG (GUI): Authentication successful for '$($Global:currentUserProfile.Username)'" -ForegroundColor Green 
-            $Global:currentUserReportsFolder = Join-Path $script:reportsBaseFolderPath $Global:currentUserProfile.Username
-            Ensure-DirectoryExists -Path $Global:currentUserReportsFolder
-            $loginForm.DialogResult = [System.Windows.Forms.DialogResult]::OK 
-            $loginForm.Close() 
-        } else {
-            Write-Host "DEBUG (GUI): Authentication failed for '$username'." -ForegroundColor Red 
-            $messageLabel.Text = "Login failed. Check username/password."; $textPass.Text = ""; $textPass.Focus()
-        }
-    })
-
-    Write-Host "DEBUG (GUI): Showing full login form..." 
-    $dialogResult = $loginForm.ShowDialog()
-    Write-Host "DEBUG (GUI): Full login form closed. DialogResult from ShowDialog(): '$($dialogResult)'."
-    Write-Host "DEBUG (GUI): After full ShowDialog(), currentUserProfile.Username: $($Global:currentUserProfile.Username)"
-
-    if ($Global:currentUserProfile -ne $null -and $dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
-        Write-Host "DEBUG (GUI): Show-LoginWindow (Full) returning TRUE." ; return $true 
-    } else {
-        Write-Host "DEBUG (GUI): Show-LoginWindow (Full) returning FALSE. currentUserProfile is null or DialogResult was not OK ('$($dialogResult)')." 
-        $Global:currentUserProfile = $null; return $false 
-    }
+# --- Pre-load All Carrier Keys/Data ---
+Write-Verbose "Loading all available carrier keys/accounts/margins..."
+$script:allCentralKeys = @{}; $script:allSAIAKeys = @{}; $script:allRLKeys = @{}
+try {
+    $script:allCentralKeys = Load-KeysFromFolder -KeysFolderPath $script:centralKeysFolderPath -CarrierName "Central Transport"
+    Write-Host "DEBUG GUI (Startup): Loaded Central Keys. Type: $($script:allCentralKeys.GetType().FullName). Count: $($script:allCentralKeys.Count)."
+    if ($script:allCentralKeys -isnot [hashtable]) { Write-Warning "DEBUG GUI (Startup): allCentralKeys is NOT a hashtable after Load-KeysFromFolder!" }
+    $script:allSAIAKeys = Load-KeysFromFolder -KeysFolderPath $script:saiaKeysFolderPath -CarrierName "SAIA"
+    Write-Host "DEBUG GUI (Startup): Loaded SAIA Keys. Type: $($script:allSAIAKeys.GetType().FullName). Count: $($script:allSAIAKeys.Count)."
+    if ($script:allSAIAKeys -isnot [hashtable]) { Write-Warning "DEBUG GUI (Startup): allSAIAKeys is NOT a hashtable after Load-KeysFromFolder!" }
+    $script:allRLKeys = Load-KeysFromFolder -KeysFolderPath $script:rlKeysFolderPath -CarrierName "RL Carriers"
+    Write-Host "DEBUG GUI (Startup): Loaded R+L Keys. Type: $($script:allRLKeys.GetType().FullName). Count: $($script:allRLKeys.Count)."
+    if ($script:allRLKeys -isnot [hashtable]) { Write-Warning "DEBUG GUI (Startup): allRLKeys is NOT a hashtable after Load-KeysFromFolder!" }
+} catch {
+    $loadErrorMsg = "FATAL ERROR during Load-KeysFromFolder: $($_.Exception.Message). Check function availability and key file paths."
+    Write-Error $loadErrorMsg
+    [System.Windows.Forms.MessageBox]::Show($loadErrorMsg, "Key Loading Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 }
+Write-Verbose "Key/Account/Margin loading complete."
+
+# --- Pre-load All Customer Profiles ---
+Write-Verbose "Loading all available customer profiles..."
+$script:allCustomerProfiles = Load-AllCustomerProfiles -UserAccountsFolderPath $script:customerAccountsFolderPath
+Write-Verbose "Customer profile loading complete."
+if($script:allCustomerProfiles.Count -eq 0){ Write-Warning "DEBUG GUI (Startup): No customer profiles loaded!"}
+else { Write-Host "DEBUG GUI (Startup): $($script:allCustomerProfiles.Count) customer profiles loaded." }
 
 
-# --- Function to Display Single Quote Input View in a Panel ---
-function Display-SingleQuoteViewInPanel {
-    param(
-        [Parameter(Mandatory=$true)]
-        [System.Windows.Forms.Panel]$ParentPanel
-    )
-    Write-Host "DEBUG (GUI): Display-SingleQuoteViewInPanel called."
-    $ParentPanel.Controls.Clear() 
+$script:currentUserProfile = $null; $script:selectedCustomerProfile = $null; $script:currentUserReportsFolder = $null
+$fontRegular = New-Object System.Drawing.Font("Segoe UI", 9); $fontBold = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold); $fontTitle = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold); $fontMono = New-Object System.Drawing.Font("Consolas", 9)
+$colorBackground = [System.Drawing.Color]::FromArgb(240, 242, 245); $colorPanel = [System.Drawing.Color]::White; $colorPrimary = [System.Drawing.Color]::FromArgb(0, 120, 215); $colorPrimaryLight = [System.Drawing.Color]::FromArgb(100, 180, 240)
+$colorText = [System.Drawing.Color]::FromArgb(30, 30, 30); $colorTextLight = [System.Drawing.Color]::FromArgb(100, 100, 100); $colorButtonBack = $colorPrimary; $colorButtonFore = [System.Drawing.Color]::White; $colorButtonBorder = [System.Drawing.Color]::FromArgb(0, 90, 180)
+$colorInputBorder = [System.Drawing.Color]::FromArgb(200, 200, 200); $paddingSmall = New-Object System.Windows.Forms.Padding(5); $paddingMedium = New-Object System.Windows.Forms.Padding(10)
 
-    # $controls hashtable is useful for programmatic access if needed, but for click handler, direct find is more robust
-    # $script:tempControls = @{} # Using script scope for helper, or pass $controls as [ref]
+$mainForm = New-Object System.Windows.Forms.Form; $mainForm.Text = "TMS GUI Tool (Broker Mode)"; $mainForm.Size = New-Object System.Drawing.Size(850, 700); $mainForm.MinimumSize = New-Object System.Drawing.Size(800, 600); $mainForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen; $mainForm.MaximizeBox = $true; $mainForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable; $mainForm.BackColor = $colorBackground; $mainForm.Font = $fontRegular
 
-    $yPos = 20
-    $labelWidth = 150
-    $textWidth = 220
-    $leftMargin = 20
-    $textLeftMargin = $leftMargin + $labelWidth + 10
+$loginPanel = New-Object System.Windows.Forms.Panel; $loginPanel.Location = New-Object System.Drawing.Point(10, 10); $loginPanel.Size = New-Object System.Drawing.Size(320, 170); $loginPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $loginPanel.Anchor = [System.Windows.Forms.AnchorStyles]::None; $loginPanel.BackColor = $colorPanel; $loginPanel.Padding = $paddingMedium
+$loginTitleLabel = New-Object System.Windows.Forms.Label; $loginTitleLabel.Text = "Broker Login"; $loginTitleLabel.Font = $fontTitle; $loginTitleLabel.ForeColor = $colorPrimary; $loginTitleLabel.AutoSize = $true; $loginTitleLabel.Location = New-Object System.Drawing.Point(10, 10)
+$labelUsername = New-Object System.Windows.Forms.Label; $labelUsername.Text = "Username:"; $labelUsername.Location = New-Object System.Drawing.Point(10, 55); $labelUsername.AutoSize = $true; $labelUsername.ForeColor = $colorText
+$textboxUsername = New-Object System.Windows.Forms.TextBox; $textboxUsername.Location = New-Object System.Drawing.Point(95, 52); $textboxUsername.Size = New-Object System.Drawing.Size(200, 23); $textboxUsername.Font = $fontRegular; $textboxUsername.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelPassword = New-Object System.Windows.Forms.Label; $labelPassword.Text = "Password:"; $labelPassword.Location = New-Object System.Drawing.Point(10, 88); $labelPassword.AutoSize = $true; $labelPassword.ForeColor = $colorText
+$textboxPassword = New-Object System.Windows.Forms.TextBox; $textboxPassword.Location = New-Object System.Drawing.Point(95, 85); $textboxPassword.Size = New-Object System.Drawing.Size(200, 23); $textboxPassword.UseSystemPasswordChar = $true; $textboxPassword.Font = $fontRegular; $textboxPassword.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$buttonLogin = New-Object System.Windows.Forms.Button; $buttonLogin.Text = "Login"; $buttonLogin.Location = New-Object System.Drawing.Point(120, 125); $buttonLogin.Size = New-Object System.Drawing.Size(80, 30); $buttonLogin.Font = $fontBold; $buttonLogin.BackColor = $colorButtonBack; $buttonLogin.ForeColor = $colorButtonFore; $buttonLogin.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonLogin.FlatAppearance.BorderSize = 1; $buttonLogin.FlatAppearance.BorderColor = $colorButtonBorder
+$loginPanel.Controls.AddRange(@($loginTitleLabel, $labelUsername, $textboxUsername, $labelPassword, $textboxPassword, $buttonLogin)); $mainForm.Controls.Add($loginPanel)
+$mainForm.Add_Resize({ if ($loginPanel.Visible) { $loginPanel.Left = ($mainForm.ClientSize.Width - $loginPanel.Width) / 2; $loginPanel.Top = ($mainForm.ClientSize.Height - $loginPanel.Height) / 3 } })
+
+$statusBar = New-Object System.Windows.Forms.StatusBar; $statusBar.Text = "Ready. Please login."; $statusBar.Font = $fontRegular
+$tabControlMain = New-Object System.Windows.Forms.TabControl; $tabControlMain.Location = New-Object System.Drawing.Point(10, 10); $tabControlMain.Size = New-Object System.Drawing.Size(($mainForm.ClientSize.Width - 20), ($mainForm.ClientSize.Height - 50)); $tabControlMain.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right; $tabControlMain.Visible = $false; $tabControlMain.Font = $fontRegular; $tabControlMain.Padding = New-Object System.Drawing.Point(10, 5); $mainForm.Controls.Add($tabControlMain)
+
+$tabPageQuote = New-Object System.Windows.Forms.TabPage; $tabPageQuote.Text = "Quote"; $tabPageQuote.BackColor = $colorPanel; $tabPageQuote.Padding = $paddingMedium; $tabControlMain.Controls.Add($tabPageQuote)
+$tabPageSettings = New-Object System.Windows.Forms.TabPage; $tabPageSettings.Text = "Settings"; $tabPageSettings.BackColor = $colorPanel; $tabPageSettings.Padding = $paddingMedium; $tabControlMain.Controls.Add($tabPageSettings)
+$tabPageReports = New-Object System.Windows.Forms.TabPage; $tabPageReports.Text = "Reports"; $tabPageReports.BackColor = $colorPanel; $tabPageReports.Padding = $paddingMedium; $tabControlMain.Controls.Add($tabPageReports) 
+
+# ============================================================
+# Single Quote UI Section (Inside $tabPageQuote) 
+# ============================================================
+$singleQuotePanel = New-Object System.Windows.Forms.Panel; $singleQuotePanel.Dock = [System.Windows.Forms.DockStyle]::Fill; $singleQuotePanel.BackColor = $colorPanel
+$labelSelectCustomer_Quote = New-Object System.Windows.Forms.Label; $labelSelectCustomer_Quote.Text = "Select Customer:"; $labelSelectCustomer_Quote.Location = New-Object System.Drawing.Point(550, 15); $labelSelectCustomer_Quote.AutoSize = $true; $labelSelectCustomer_Quote.Font = $fontBold; $labelSelectCustomer_Quote.ForeColor = $colorText
+$comboBoxSelectCustomer_Quote = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Quote.Location = New-Object System.Drawing.Point(550, 35); $comboBoxSelectCustomer_Quote.Size = New-Object System.Drawing.Size(200, 23); $comboBoxSelectCustomer_Quote.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Quote.Enabled = $false; $comboBoxSelectCustomer_Quote.Font = $fontRegular
+[int]$col1X = 15; [int]$col2X = 300; [int]$labelWidth = 90; [int]$textBoxWidth = 160; [int]$rowHeight = 30
+$labelOriginHeader = New-Object System.Windows.Forms.Label; $labelOriginHeader.Text = "Origin Details:"; $labelOriginHeader.Location = New-Object System.Drawing.Point($col1X, 15); $labelOriginHeader.Font = $fontBold; $labelOriginHeader.AutoSize = $true; $labelOriginHeader.ForeColor = $colorPrimary
+$labelDestHeader = New-Object System.Windows.Forms.Label; $labelDestHeader.Text = "Destination Details:"; $labelDestHeader.Location = New-Object System.Drawing.Point($col2X, 15); $labelDestHeader.Font = $fontBold; $labelDestHeader.AutoSize = $true; $labelDestHeader.ForeColor = $colorPrimary
+$labelOriginZip = New-Object System.Windows.Forms.Label; $labelOriginZip.Text = "ZIP Code:"; $labelOriginZip.Location = New-Object System.Drawing.Point($col1X, (15 + $rowHeight)); $labelOriginZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelOriginZip.ForeColor = $colorText
+$textboxOriginZip = New-Object System.Windows.Forms.TextBox; $textboxOriginZip.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), (15 + $rowHeight)); $textboxOriginZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginZip.MaxLength = 5; $textboxOriginZip.Font = $fontRegular; $textboxOriginZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelDestZip = New-Object System.Windows.Forms.Label; $labelDestZip.Text = "ZIP Code:"; $labelDestZip.Location = New-Object System.Drawing.Point($col2X, (15 + $rowHeight)); $labelDestZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelDestZip.ForeColor = $colorText
+$textboxDestZip = New-Object System.Windows.Forms.TextBox; $textboxDestZip.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), (15 + $rowHeight)); $textboxDestZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxDestZip.MaxLength = 5; $textboxDestZip.Font = $fontRegular; $textboxDestZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelOriginCity = New-Object System.Windows.Forms.Label; $labelOriginCity.Text = "City:"; $labelOriginCity.Location = New-Object System.Drawing.Point($col1X, (15 + (2 * $rowHeight))); $labelOriginCity.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginCity.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelOriginCity.ForeColor = $colorText
+$textboxOriginCity = New-Object System.Windows.Forms.TextBox; $textboxOriginCity.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), (15 + (2 * $rowHeight))); $textboxOriginCity.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginCity.Font = $fontRegular; $textboxOriginCity.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelDestCity = New-Object System.Windows.Forms.Label; $labelDestCity.Text = "City:"; $labelDestCity.Location = New-Object System.Drawing.Point($col2X, (15 + (2 * $rowHeight))); $labelDestCity.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestCity.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelDestCity.ForeColor = $colorText
+$textboxDestCity = New-Object System.Windows.Forms.TextBox; $textboxDestCity.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), (15 + (2 * $rowHeight))); $textboxDestCity.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxDestCity.Font = $fontRegular; $textboxDestCity.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelOriginState = New-Object System.Windows.Forms.Label; $labelOriginState.Text = "State (2 Ltr):"; $labelOriginState.Location = New-Object System.Drawing.Point($col1X, (15 + (3 * $rowHeight))); $labelOriginState.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginState.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelOriginState.ForeColor = $colorText
+$textboxOriginState = New-Object System.Windows.Forms.TextBox; $textboxOriginState.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), (15 + (3 * $rowHeight))); $textboxOriginState.Size = New-Object System.Drawing.Size(50, 23); $textboxOriginState.MaxLength = 2; $textboxOriginState.CharacterCasing = [System.Windows.Forms.CharacterCasing]::Upper; $textboxOriginState.Font = $fontRegular; $textboxOriginState.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelDestState = New-Object System.Windows.Forms.Label; $labelDestState.Text = "State (2 Ltr):"; $labelDestState.Location = New-Object System.Drawing.Point($col2X, (15 + (3 * $rowHeight))); $labelDestState.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestState.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelDestState.ForeColor = $colorText
+$textboxDestState = New-Object System.Windows.Forms.TextBox; $textboxDestState.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), (15 + (3 * $rowHeight))); $textboxDestState.Size = New-Object System.Drawing.Size(50, 23); $textboxDestState.MaxLength = 2; $textboxDestState.CharacterCasing = [System.Windows.Forms.CharacterCasing]::Upper; $textboxDestState.Font = $fontRegular; $textboxDestState.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelWeight = New-Object System.Windows.Forms.Label; $labelWeight.Text = "Weight (lbs):"; $labelWeight.Location = New-Object System.Drawing.Point($col1X, (15 + (4 * $rowHeight))); $labelWeight.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelWeight.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelWeight.ForeColor = $colorText
+$textboxWeight = New-Object System.Windows.Forms.TextBox; $textboxWeight.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), (15 + (4 * $rowHeight))); $textboxWeight.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxWeight.Font = $fontRegular; $textboxWeight.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelClass = New-Object System.Windows.Forms.Label; $labelClass.Text = "Class:"; $labelClass.Location = New-Object System.Drawing.Point($col2X, (15 + (4 * $rowHeight))); $labelClass.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelClass.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $labelClass.ForeColor = $colorText
+$textboxClass = New-Object System.Windows.Forms.TextBox; $textboxClass.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), (15 + (4 * $rowHeight))); $textboxClass.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxClass.Font = $fontRegular; $textboxClass.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$groupBoxOptional = New-Object System.Windows.Forms.GroupBox; $groupBoxOptional.Text = "Optional Details"; $groupBoxOptional.Location = New-Object System.Drawing.Point($col1X, (15 + (5 * $rowHeight) + 10)); $groupBoxOptional.Size = New-Object System.Drawing.Size(510, 60); $groupBoxOptional.ForeColor = $colorText; $groupBoxOptional.Font = $fontRegular
+$labelLength = New-Object System.Windows.Forms.Label; $labelLength.Text = "L:"; $labelLength.Location = New-Object System.Drawing.Point(15, 25); $labelLength.AutoSize=$true
+$textboxLength = New-Object System.Windows.Forms.TextBox; $textboxLength.Location = New-Object System.Drawing.Point(35, 22); $textboxLength.Size = New-Object System.Drawing.Size(45, 23); $textboxLength.Text = "1.0"; $textboxLength.Font = $fontRegular; $textboxLength.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelWidthOpt = New-Object System.Windows.Forms.Label; $labelWidthOpt.Text = "W:"; $labelWidthOpt.Location = New-Object System.Drawing.Point(90, 25); $labelWidthOpt.AutoSize=$true
+$textboxWidthOpt = New-Object System.Windows.Forms.TextBox; $textboxWidthOpt.Location = New-Object System.Drawing.Point(115, 22); $textboxWidthOpt.Size = New-Object System.Drawing.Size(45, 23); $textboxWidthOpt.Text = "1.0"; $textboxWidthOpt.Font = $fontRegular; $textboxWidthOpt.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelHeight = New-Object System.Windows.Forms.Label; $labelHeight.Text = "H:"; $labelHeight.Location = New-Object System.Drawing.Point(170, 25); $labelHeight.AutoSize=$true
+$textboxHeight = New-Object System.Windows.Forms.TextBox; $textboxHeight.Location = New-Object System.Drawing.Point(195, 22); $textboxHeight.Size = New-Object System.Drawing.Size(45, 23); $textboxHeight.Text = "1.0"; $textboxHeight.Font = $fontRegular; $textboxHeight.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelDimsUnit = New-Object System.Windows.Forms.Label; $labelDimsUnit.Text = "(inches)"; $labelDimsUnit.Location = New-Object System.Drawing.Point(250, 25); $labelDimsUnit.AutoSize=$true; $labelDimsUnit.ForeColor = $colorTextLight
+$labelDeclaredValue = New-Object System.Windows.Forms.Label; $labelDeclaredValue.Text = "Declared Val ($):"; $labelDeclaredValue.Location = New-Object System.Drawing.Point(310, 25); $labelDeclaredValue.AutoSize=$true
+$textboxDeclaredValue = New-Object System.Windows.Forms.TextBox; $textboxDeclaredValue.Location = New-Object System.Drawing.Point(420, 22); $textboxDeclaredValue.Size = New-Object System.Drawing.Size(80, 23); $textboxDeclaredValue.Text = "0.00"; $textboxDeclaredValue.Font = $fontRegular; $textboxDeclaredValue.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$groupBoxOptional.Controls.AddRange(@($labelLength, $textboxLength, $labelWidthOpt, $textboxWidthOpt, $labelHeight, $textboxHeight, $labelDimsUnit, $labelDeclaredValue, $textboxDeclaredValue))
+$buttonGetQuote = New-Object System.Windows.Forms.Button; $buttonGetQuote.Text = "Get Quote"; $buttonGetQuote.Location = New-Object System.Drawing.Point(550, 185); $buttonGetQuote.Size = New-Object System.Drawing.Size(110, 35); $buttonGetQuote.Font = $fontBold; $buttonGetQuote.BackColor = $colorButtonBack; $buttonGetQuote.ForeColor = $colorButtonFore; $buttonGetQuote.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonGetQuote.FlatAppearance.BorderSize = 1; $buttonGetQuote.FlatAppearance.BorderColor = $colorButtonBorder
+$labelResults = New-Object System.Windows.Forms.Label; $labelResults.Text = "Quote Results:"; $labelResults.Location = New-Object System.Drawing.Point($col1X, (15 + (5 * $rowHeight) + 85)); $labelResults.Font = $fontBold; $labelResults.AutoSize = $true; $labelResults.ForeColor = $colorPrimary
+$textboxResults = New-Object System.Windows.Forms.TextBox; $textboxResults.Location = New-Object System.Drawing.Point($col1X, (15 + (5 * $rowHeight) + 105)); $textboxResults.Size = New-Object System.Drawing.Size(($singleQuotePanel.ClientSize.Width - $col1X - 15), 140); $textboxResults.Multiline = $true; $textboxResults.ReadOnly = $true; $textboxResults.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical; $textboxResults.Font = $fontMono; $textboxResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right; $textboxResults.BackColor = $colorPanel; $textboxResults.ForeColor = $colorText
+$singleQuotePanel.Controls.AddRange(@( $labelSelectCustomer_Quote, $comboBoxSelectCustomer_Quote, $labelOriginHeader, $labelDestHeader, $labelOriginZip, $textboxOriginZip, $labelDestZip, $textboxDestZip, $labelOriginCity, $textboxOriginCity, $labelDestCity, $textboxDestCity, $labelOriginState, $textboxOriginState, $labelDestState, $textboxDestState, $labelWeight, $textboxWeight, $labelClass, $textboxClass, $groupBoxOptional, $buttonGetQuote, $labelResults, $textboxResults ))
+$tabPageQuote.Controls.Add($singleQuotePanel)
+
+# ============================================================
+# Settings UI Section (Inside $tabPageSettings) 
+# ============================================================
+$settingsPanel = New-Object System.Windows.Forms.Panel; $settingsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill; $settingsPanel.BackColor = $colorPanel
+$tabPageSettings.Controls.Add($settingsPanel)
+$labelSelectCustomer_Settings = New-Object System.Windows.Forms.Label; $labelSelectCustomer_Settings.Text = "Select Customer:"; $labelSelectCustomer_Settings.Location = New-Object System.Drawing.Point(330, 15); $labelSelectCustomer_Settings.AutoSize = $true; $labelSelectCustomer_Settings.Font = $fontBold; $labelSelectCustomer_Settings.ForeColor = $colorText
+$comboBoxSelectCustomer_Settings = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Settings.Location = New-Object System.Drawing.Point(330, 35); $comboBoxSelectCustomer_Settings.Size = New-Object System.Drawing.Size(250, 23); $comboBoxSelectCustomer_Settings.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Settings.Enabled = $false; $comboBoxSelectCustomer_Settings.Font = $fontRegular
+$groupBoxCarrierSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxCarrierSelect.Text = "Select Carrier"; $groupBoxCarrierSelect.Location = New-Object System.Drawing.Point(15, 15); $groupBoxCarrierSelect.Size = New-Object System.Drawing.Size(300, 55); $groupBoxCarrierSelect.Font = $fontRegular; $groupBoxCarrierSelect.ForeColor = $colorText
+$radioCentral = New-Object System.Windows.Forms.RadioButton; $radioCentral.Text = "Central"; $radioCentral.Location = New-Object System.Drawing.Point(15, 22); $radioCentral.AutoSize = $true; $radioCentral.Checked = $true; $radioCentral.Font = $fontRegular; $radioCentral.ForeColor = $colorText
+$radioSAIA = New-Object System.Windows.Forms.RadioButton; $radioSAIA.Text = "SAIA"; $radioSAIA.Location = New-Object System.Drawing.Point(100, 22); $radioSAIA.AutoSize = $true; $radioSAIA.Font = $fontRegular; $radioSAIA.ForeColor = $colorText
+$radioRL = New-Object System.Windows.Forms.RadioButton; $radioRL.Text = "R+L"; $radioRL.Location = New-Object System.Drawing.Point(180, 22); $radioRL.AutoSize = $true; $radioRL.Font = $fontRegular; $radioRL.ForeColor = $colorText
+$groupBoxCarrierSelect.Controls.AddRange(@($radioCentral, $radioSAIA, $radioRL))
+$labelTariffList = New-Object System.Windows.Forms.Label; $labelTariffList.Text = "Permitted Tariffs && Margins (for Selected Customer):"; $labelTariffList.Location = New-Object System.Drawing.Point(15, 80); $labelTariffList.AutoSize = $true; $labelTariffList.Font = $fontBold; $labelTariffList.ForeColor = $colorPrimary
+$listBoxTariffs = New-Object System.Windows.Forms.ListBox; $listBoxTariffs.Location = New-Object System.Drawing.Point(15, 105); $listBoxTariffs.Size = New-Object System.Drawing.Size(300, 220); $listBoxTariffs.Font = $fontMono; $listBoxTariffs.IntegralHeight = $false; $listBoxTariffs.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$groupBoxSetMargin = New-Object System.Windows.Forms.GroupBox; $groupBoxSetMargin.Text = "Set Margin for Selected Tariff"; $groupBoxSetMargin.Location = New-Object System.Drawing.Point(330, 75); $groupBoxSetMargin.Size = New-Object System.Drawing.Size(250, 130); $groupBoxSetMargin.Font = $fontRegular; $groupBoxSetMargin.ForeColor = $colorText
+$labelSelectedTariff = New-Object System.Windows.Forms.Label; $labelSelectedTariff.Text = "Selected: (None)"; $labelSelectedTariff.Location = New-Object System.Drawing.Point(15, 28); $labelSelectedTariff.AutoSize = $true; $labelSelectedTariff.Font = $fontBold; $labelSelectedTariff.ForeColor = $colorText
+$labelNewMargin = New-Object System.Windows.Forms.Label; $labelNewMargin.Text = "New Margin %:"; $labelNewMargin.Location = New-Object System.Drawing.Point(15, 60); $labelNewMargin.AutoSize = $true; $labelNewMargin.ForeColor = $colorText
+$textBoxNewMargin = New-Object System.Windows.Forms.TextBox; $textBoxNewMargin.Location = New-Object System.Drawing.Point(120, 57); $textBoxNewMargin.Size = New-Object System.Drawing.Size(70, 23); $textBoxNewMargin.Enabled = $false; $textBoxNewMargin.Font = $fontRegular; $textBoxNewMargin.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$buttonSetMargin = New-Object System.Windows.Forms.Button; $buttonSetMargin.Text = "Set Margin"; $buttonSetMargin.Location = New-Object System.Drawing.Point(75, 90); $buttonSetMargin.Size = New-Object System.Drawing.Size(100, 30); $buttonSetMargin.Enabled = $false; $buttonSetMargin.Font = $fontBold; $buttonSetMargin.BackColor = $colorButtonBack; $buttonSetMargin.ForeColor = $colorButtonFore; $buttonSetMargin.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonSetMargin.FlatAppearance.BorderSize = 1; $buttonSetMargin.FlatAppearance.BorderColor = $colorButtonBorder
+$groupBoxSetMargin.Controls.AddRange(@($labelSelectedTariff, $labelNewMargin, $textBoxNewMargin, $buttonSetMargin))
+$settingsPanel.Controls.AddRange(@( $labelSelectCustomer_Settings, $comboBoxSelectCustomer_Settings, $groupBoxCarrierSelect, $labelTariffList, $listBoxTariffs, $groupBoxSetMargin ))
+
+# ============================================================
+# Reports UI Section (Inside $tabPageReports) 
+# ============================================================
+$reportsPanel = New-Object System.Windows.Forms.Panel; $reportsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill; $reportsPanel.BackColor = $colorPanel
+$tabPageReports.Controls.Add($reportsPanel)
+
+[int]$reportsPanelX = 15; [int]$reportsPanelY = 15
+[int]$reportsControlSpacing = 35; [int]$reportsLabelWidth = 150; [int]$reportsInputWidth = 250 
+[int]$reportsListBoxWidth = 250; [int]$reportsListBoxHeight = 100
+[int]$groupBoxAspInputHeight = 55; [int]$checkBoxApplyMarginsHeight = 25 
+[int]$verticalPaddingBetweenControls = 10 
+
+$currentY = $reportsPanelY 
+
+$labelSelectCustomer_Reports = New-Object System.Windows.Forms.Label; $labelSelectCustomer_Reports.Text = "Select Customer:"; $labelSelectCustomer_Reports.Location = New-Object System.Drawing.Point($reportsPanelX, $currentY); $labelSelectCustomer_Reports.AutoSize = $true; $labelSelectCustomer_Reports.Font = $fontBold; $labelSelectCustomer_Reports.ForeColor = $colorText
+$comboBoxSelectCustomer_Reports = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Reports.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + 5), ($currentY - 3)); $comboBoxSelectCustomer_Reports.Size = New-Object System.Drawing.Size($reportsInputWidth, 23); $comboBoxSelectCustomer_Reports.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Reports.Enabled = $false; $comboBoxSelectCustomer_Reports.Font = $fontRegular
+$currentY += $reportsControlSpacing
+
+$labelReportType = New-Object System.Windows.Forms.Label; $labelReportType.Text = "Select Report Type:"; $labelReportType.Location = New-Object System.Drawing.Point($reportsPanelX, $currentY); $labelReportType.AutoSize = $true; $labelReportType.Font = $fontBold; $labelReportType.ForeColor = $colorText
+$comboBoxReportType = New-Object System.Windows.Forms.ComboBox; $comboBoxReportType.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + 5), ($currentY - 3)); $comboBoxReportType.Size = New-Object System.Drawing.Size($reportsInputWidth, 23); $comboBoxReportType.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxReportType.Enabled = $false; $comboBoxReportType.Font = $fontRegular
+$comboBoxReportType.Items.AddRange(@( "Carrier Comparison", "Avg Required Margin", "Required Margin for ASP", "Cross-Carrier ASP Analysis", "Margins by History" ))
+$currentY += $reportsControlSpacing # Base Y for next set of controls
+
+# Define controls that might shift
+$groupBoxReportCarrierSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxReportCarrierSelect.Text = "Select Carrier"; $groupBoxReportCarrierSelect.Size = New-Object System.Drawing.Size(300, 55); $groupBoxReportCarrierSelect.Font = $fontRegular; $groupBoxReportCarrierSelect.ForeColor = $colorText; $groupBoxReportCarrierSelect.Visible = $false 
+$radioReportCentral = New-Object System.Windows.Forms.RadioButton; $radioReportCentral.Text = "Central"; $radioReportCentral.Location = New-Object System.Drawing.Point(15, 22); $radioReportCentral.AutoSize = $true; $radioReportCentral.Checked = $true; $radioReportCentral.Font = $fontRegular; $radioReportCentral.ForeColor = $colorText
+$radioReportSAIA = New-Object System.Windows.Forms.RadioButton; $radioReportSAIA.Text = "SAIA"; $radioReportSAIA.Location = New-Object System.Drawing.Point(100, 22); $radioReportSAIA.AutoSize = $true; $radioReportSAIA.Font = $fontRegular; $radioReportSAIA.ForeColor = $colorText
+$radioReportRL = New-Object System.Windows.Forms.RadioButton; $radioReportRL.Text = "R+L"; $radioReportRL.Location = New-Object System.Drawing.Point(180, 22); $radioReportRL.AutoSize = $true; $radioReportRL.Font = $fontRegular; $radioReportRL.ForeColor = $colorText
+$groupBoxReportCarrierSelect.Controls.AddRange(@($radioReportCentral, $radioReportSAIA, $radioReportRL))
+
+$groupBoxReportTariffSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxReportTariffSelect.Text = "Select Tariff(s)"; $groupBoxReportTariffSelect.Size = New-Object System.Drawing.Size(550, 140); $groupBoxReportTariffSelect.Font = $fontRegular; $groupBoxReportTariffSelect.ForeColor = $colorText; $groupBoxReportTariffSelect.Visible = $false 
+$labelReportTariff1 = New-Object System.Windows.Forms.Label; $labelReportTariff1.Text = "Tariff 1 (Base/Cost):"; $labelReportTariff1.Location = New-Object System.Drawing.Point(10, 25); $labelReportTariff1.AutoSize = $true; $labelReportTariff1.Font = $fontBold; $labelReportTariff1.ForeColor = $colorText
+$listBoxReportTariff1 = New-Object System.Windows.Forms.ListBox; $listBoxReportTariff1.Location = New-Object System.Drawing.Point(10, 45); $listBoxReportTariff1.Size = New-Object System.Drawing.Size($reportsListBoxWidth, $reportsListBoxHeight); $listBoxReportTariff1.Font = $fontMono; $listBoxReportTariff1.IntegralHeight = $false; $listBoxReportTariff1.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$labelReportTariff2 = New-Object System.Windows.Forms.Label; $labelReportTariff2.Text = "Tariff 2 (Comparison):"; $labelReportTariff2.Location = New-Object System.Drawing.Point(280, 25); $labelReportTariff2.AutoSize = $true; $labelReportTariff2.Font = $fontBold; $labelReportTariff2.ForeColor = $colorText; $labelReportTariff2.Visible = $false 
+$listBoxReportTariff2 = New-Object System.Windows.Forms.ListBox; $listBoxReportTariff2.Location = New-Object System.Drawing.Point(280, 45); $listBoxReportTariff2.Size = New-Object System.Drawing.Size($reportsListBoxWidth, $reportsListBoxHeight); $listBoxReportTariff2.Font = $fontMono; $listBoxReportTariff2.IntegralHeight = $false; $listBoxReportTariff2.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $listBoxReportTariff2.Visible = $false 
+$groupBoxReportTariffSelect.Controls.AddRange(@($labelReportTariff1, $listBoxReportTariff1, $labelReportTariff2, $listBoxReportTariff2))
+
+$labelSelectCsv = New-Object System.Windows.Forms.Label; $labelSelectCsv.Text = "Select Data File (CSV):"; $labelSelectCsv.AutoSize = $true; $labelSelectCsv.Font = $fontBold; $labelSelectCsv.ForeColor = $colorText
+$textboxCsvPath = New-Object System.Windows.Forms.TextBox; $textboxCsvPath.Size = New-Object System.Drawing.Size($reportsInputWidth, 23); $textboxCsvPath.ReadOnly = $true; $textboxCsvPath.Font = $fontRegular; $textboxCsvPath.BackColor = $colorPanel
+$buttonSelectCsv = New-Object System.Windows.Forms.Button; $buttonSelectCsv.Text = "Browse..."; $buttonSelectCsv.Size = New-Object System.Drawing.Size(80, 28); $buttonSelectCsv.Font = $fontRegular; $buttonSelectCsv.BackColor = $colorButtonBack; $buttonSelectCsv.ForeColor = $colorButtonFore; $buttonSelectCsv.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonSelectCsv.FlatAppearance.BorderSize = 1; $buttonSelectCsv.FlatAppearance.BorderColor = $colorButtonBorder; $buttonSelectCsv.Enabled = $false
+
+$groupBoxReportAspInput = New-Object System.Windows.Forms.GroupBox; $groupBoxReportAspInput.Text = "Desired Selling Price"; $groupBoxReportAspInput.Size = New-Object System.Drawing.Size(410, $groupBoxAspInputHeight); $groupBoxReportAspInput.Font = $fontRegular; $groupBoxReportAspInput.ForeColor = $colorText; $groupBoxReportAspInput.Visible = $false 
+$labelDesiredAsp = New-Object System.Windows.Forms.Label; $labelDesiredAsp.Text = "Desired Avg Selling Price ($):"; $labelDesiredAsp.Location = New-Object System.Drawing.Point(10, 25); $labelDesiredAsp.AutoSize = $true; $labelDesiredAsp.ForeColor = $colorText
+$textBoxDesiredAsp = New-Object System.Windows.Forms.TextBox; $textBoxDesiredAsp.Location = New-Object System.Drawing.Point(190, 22); $textBoxDesiredAsp.Size = New-Object System.Drawing.Size(100, 23); $textBoxDesiredAsp.Font = $fontRegular; $textBoxDesiredAsp.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$groupBoxReportAspInput.Controls.AddRange(@($labelDesiredAsp, $textBoxDesiredAsp))
+
+$checkBoxApplyMargins = New-Object System.Windows.Forms.CheckBox; $checkBoxApplyMargins.Text = "Apply Calculated Margins to Tariff Files (Use with Caution!)"; 
+$checkBoxApplyMargins.AutoSize = $true; $checkBoxApplyMargins.Font = $fontRegular; $checkBoxApplyMargins.ForeColor = [System.Drawing.Color]::DarkRed; $checkBoxApplyMargins.Visible = $false 
+
+$buttonRunReport = New-Object System.Windows.Forms.Button; $buttonRunReport.Text = "Run Report"; 
+$buttonRunReport.Size = New-Object System.Drawing.Size(120, 35); $buttonRunReport.Font = $fontBold; $buttonRunReport.BackColor = $colorButtonBack; $buttonRunReport.ForeColor = $colorButtonFore; $buttonRunReport.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonRunReport.FlatAppearance.BorderSize = 1; $buttonRunReport.FlatAppearance.BorderColor = $colorButtonBorder; $buttonRunReport.Enabled = $false
+
+$textboxReportResults = New-Object System.Windows.Forms.TextBox; 
+$textboxReportResults.Size = New-Object System.Drawing.Size(($reportsPanel.ClientSize.Width - $reportsPanelX - 15), 60); $textboxReportResults.Multiline = $true; $textboxReportResults.ReadOnly = $true; $textboxReportResults.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical; $textboxReportResults.Font = $fontMono; $textboxReportResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right; $textboxReportResults.BackColor = $colorPanel; $textboxReportResults.ForeColor = $colorText
+
+$reportsPanel.Controls.AddRange(@(
+    $labelSelectCustomer_Reports, $comboBoxSelectCustomer_Reports,
+    $labelReportType, $comboBoxReportType,
+    $groupBoxReportCarrierSelect,
+    $groupBoxReportTariffSelect,
+    $labelSelectCsv, $textboxCsvPath, $buttonSelectCsv,
+    $groupBoxReportAspInput,
+    $checkBoxApplyMargins,
+    $buttonRunReport,
+    $textboxReportResults
+))
+
+$mainForm.Controls.Add($statusBar)
+
+# ============================================================
+# Event Handlers Section
+# ============================================================
+$buttonLogin.Add_Click({ param($sender, $e); $username = $textboxUsername.Text; $password = $textboxPassword.Text; if (-not (Get-Command Test-PasswordHash -ErrorAction SilentlyContinue)) { $errorMsg = "FATAL ERROR: 'Test-PasswordHash' function not found."; Write-Error $errorMsg; [System.Windows.Forms.MessageBox]::Show($errorMsg, "Login Function Missing", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); return }; $script:currentUserProfile = $null; try { $script:currentUserProfile = Authenticate-User -Username $username -PasswordPlainText $password -UserAccountsFolderPath $script:userAccountsFolderPath } catch { $errorMsg = "Error during authentication: $($_.Exception.Message)"; Write-Error $errorMsg; [System.Windows.Forms.MessageBox]::Show($errorMsg, "Authentication Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) }; if ($script:currentUserProfile) { $statusBar.Text = "Login successful! Welcome, $($script:currentUserProfile.Username)."; $loginPanel.Visible = $false; $tabControlMain.Visible = $true; $comboBoxSelectCustomer_Quote.Items.Clear(); $comboBoxSelectCustomer_Settings.Items.Clear(); $comboBoxSelectCustomer_Reports.Items.Clear(); if ($script:allCustomerProfiles.Count -gt 0) { $customerNames = $script:allCustomerProfiles.Keys | Sort-Object; $comboBoxSelectCustomer_Quote.Items.AddRange($customerNames); $comboBoxSelectCustomer_Settings.Items.AddRange($customerNames); $comboBoxSelectCustomer_Reports.Items.AddRange($customerNames); $comboBoxSelectCustomer_Quote.SelectedIndex = 0; $comboBoxSelectCustomer_Settings.SelectedIndex = 0; $comboBoxSelectCustomer_Reports.SelectedIndex = 0; $comboBoxSelectCustomer_Quote.Enabled = $true; $comboBoxSelectCustomer_Settings.Enabled = $true; $comboBoxSelectCustomer_Reports.Enabled = $true; $script:selectedCustomerProfile = $script:allCustomerProfiles[$customerNames[0]]; Write-Host "DEBUG: Initial Selected Customer Profile set to '$($customerNames[0])'" } else { $comboBoxSelectCustomer_Quote.Items.Add("No Customers Found"); $comboBoxSelectCustomer_Settings.Items.Add("No Customers Found"); $comboBoxSelectCustomer_Reports.Items.Add("No Customers Found"); $comboBoxSelectCustomer_Quote.Enabled = $false; $comboBoxSelectCustomer_Settings.Enabled = $false; $comboBoxSelectCustomer_Reports.Enabled = $false; $script:selectedCustomerProfile = $null; Write-Warning "No customer profiles loaded from '$script:customerAccountsFolderPath'." }; $script:currentUserReportsFolder = Join-Path $script:reportsBaseFolderPath $script:currentUserProfile.Username; Ensure-DirectoryExists $script:currentUserReportsFolder; try { if ($script:selectedCustomerProfile) { Populate-TariffListBox -SelectedCarrier "Central" -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -CustomerProfile $script:selectedCustomerProfile } else { $statusBar.Text = "Ready. Please select a customer to view settings." } } catch { $statusBar.Text = "Error populating initial settings list: $($_.Exception.Message)" }; $textboxPassword.Clear(); $comboBoxReportType.Enabled = $true; $buttonSelectCsv.Enabled = $true; $buttonRunReport.Enabled = $true; $comboBoxReportType.SelectedIndex = 0; } else { if ($Error.Count -eq 0) { $statusBar.Text = "Login failed. Please check username and password."; [System.Windows.Forms.MessageBox]::Show("Login Failed. Please check username and password.", "Login Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) }; $textboxPassword.Clear(); $textboxUsername.Focus() } })
+
+$customerChangedHandler = { param($sender, $e); if ($sender.SelectedIndex -ge 0) { $selectedName = $sender.SelectedItem.ToString(); if ($script:allCustomerProfiles.ContainsKey($selectedName)) { $script:selectedCustomerProfile = $script:allCustomerProfiles[$selectedName]; Write-Host "DEBUG: Selected Customer Profile set to '$selectedName'"; $comboBoxes = @($comboBoxSelectCustomer_Quote, $comboBoxSelectCustomer_Settings, $comboBoxSelectCustomer_Reports); foreach($cb in $comboBoxes){ if($cb -ne $sender -and $cb.SelectedItem -ne $selectedName){ try {$cb.SelectedItem = $selectedName} catch {Write-Warning "Failed to sync customer selection to $($cb.Name)"} } }; if ($tabControlMain.SelectedTab -eq $tabPageSettings) { $selectedCarrierForSettings = "Central"; if ($radioSAIA.Checked) { $selectedCarrierForSettings = "SAIA" } elseif ($radioRL.Checked) { $selectedCarrierForSettings = "RL" }; try { Populate-TariffListBox -SelectedCarrier $selectedCarrierForSettings -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -CustomerProfile $script:selectedCustomerProfile } catch { $statusBar.Text = "Error refreshing settings list: $($_.Exception.Message)" } }; if ($tabControlMain.SelectedTab -eq $tabPageReports) { try { $comboBoxReportType_SelectedIndexChanged_ScriptBlock.Invoke($comboBoxReportType, [System.EventArgs]::Empty) } catch { $statusBar.Text = "Error refreshing report UI on customer change: $($_.Exception.Message)" } }; $statusBar.Text = "Selected Customer: $selectedName" } else { Write-Warning "Selected customer name '$selectedName' not found."; $script:selectedCustomerProfile = $null; $statusBar.Text = "Error selecting customer." } } else { $script:selectedCustomerProfile = $null; $statusBar.Text = "No customer selected." } }
+$comboBoxSelectCustomer_Quote.Add_SelectedIndexChanged($customerChangedHandler); $comboBoxSelectCustomer_Settings.Add_SelectedIndexChanged($customerChangedHandler); $comboBoxSelectCustomer_Reports.Add_SelectedIndexChanged($customerChangedHandler)
+
+$buttonGetQuote.Add_Click({ param($sender, $e); if ($null -eq $script:selectedCustomerProfile) { [System.Windows.Forms.MessageBox]::Show("Please select a customer first.", "Customer Not Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }; $textboxResults.Clear(); $textboxResults.Text = "Fetching rates for Customer: $($script:selectedCustomerProfile.CustomerName)... please wait."; $mainForm.Refresh(); $originZip = $textboxOriginZip.Text; $originCity = $textboxOriginCity.Text; $originState = $textboxOriginState.Text; $destZip = $textboxDestZip.Text; $destCity = $textboxDestCity.Text; $destState = $textboxDestState.Text; $weightInput = $textboxWeight.Text; $classInput = $textboxClass.Text; $lenInput = $textboxLength.Text; $widInput = $textboxWidthOpt.Text; $hgtInput = $textboxHeight.Text; $decValInput = $textboxDeclaredValue.Text; $validationErrors = [System.Collections.Generic.List[string]]::new(); if (-not ($originZip -match '^\d{5}$')) { $validationErrors.Add("Origin ZIP.") }; if ([string]::IsNullOrWhiteSpace($originCity)) { $validationErrors.Add("Origin City.") }; if (-not ($originState -match '^[A-Za-z]{2}$')) { $validationErrors.Add("Origin State.") }; if (-not ($destZip -match '^\d{5}$')) { $validationErrors.Add("Dest ZIP.") }; if ([string]::IsNullOrWhiteSpace($destCity)) { $validationErrors.Add("Dest City.") }; if (-not ($destState -match '^[A-Za-z]{2}$')) { $validationErrors.Add("Dest State.") }; $weight = $null; if ($weightInput -match '^\d+(\.\d+)?$' -and ([decimal]$weightInput -gt 0)) { $weight = [decimal]$weightInput } else { $validationErrors.Add("Weight.") }; $freightClass = $null; if ($classInput -match '^\d+(\.\d+)?$' -and ([double]$classInput -ge 50) -and ([double]$classInput -le 500) ) { $freightClass = $classInput } else { $validationErrors.Add("Class.") }; $itemLength = 1.0; if(-not [string]::IsNullOrWhiteSpace($lenInput)) { if($lenInput -match '^\d+(\.\d+)?$') { $itemLength = [float]$lenInput } else { $validationErrors.Add("Length.") } }; $itemWidth = 1.0; if(-not [string]::IsNullOrWhiteSpace($widInput)) { if($widInput -match '^\d+(\.\d+)?$') { $itemWidth = [float]$widInput } else { $validationErrors.Add("Width.") } }; $itemHeight = 1.0; if(-not [string]::IsNullOrWhiteSpace($hgtInput)) { if($hgtInput -match '^\d+(\.\d+)?$') { $itemHeight = [float]$hgtInput } else { $validationErrors.Add("Height.") } }; $declaredValue = 0.0; if(-not [string]::IsNullOrWhiteSpace($decValInput)) { if($decValInput -match '^\d+(\.\d+)?$') { $declaredValue = [decimal]$decValInput } else { $validationErrors.Add("Declared Value.") } }; if ($validationErrors.Count -gt 0) { $errorMsg = "Invalid Input:`n" + ($validationErrors -join "`n"); [System.Windows.Forms.MessageBox]::Show($errorMsg, "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); $textboxResults.Text = $errorMsg; return }; $statusBar.Text = "Fetching rates for Customer: $($script:selectedCustomerProfile.CustomerName), $originZip -> $destZip..."; $optionalShipmentDetails = [PSCustomObject]@{ OriginCity = $originCity; OriginState = $originState; DestinationCity = $destCity; DestinationState = $destState; ItemWidth = $itemLength; ItemHeight = $itemHeight; ItemLength = $itemWidth; DeclaredValue = $declaredValue; CustomerData = $null; QuoteType = 'Domestic'; }; $resultsText = [System.Text.StringBuilder]::new(); $resultsText.AppendLine("==================== SHIPMENT QUOTE ====================") | Out-Null; $resultsText.AppendLine("Quote Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null; $resultsText.AppendLine("Broker User: $($script:currentUserProfile.Username)") | Out-Null; $resultsText.AppendLine("Customer:    $($script:selectedCustomerProfile.CustomerName)") | Out-Null; $resultsText.AppendLine("--------------------------------------------------------") | Out-Null; $resultsText.AppendLine("Origin:      $originCity, $originState $originZip") | Out-Null; $resultsText.AppendLine("Destination: $destCity, $destState $destZip") | Out-Null; $resultsText.AppendLine("Weight:      $($weight) lbs") | Out-Null; $resultsText.AppendLine("Class:       $($freightClass)") | Out-Null; if ($itemLength -ne 1.0 -or $itemWidth -ne 1.0 -or $itemHeight -ne 1.0) { $resultsText.AppendLine("Dimensions:  $itemLength"" L x $itemWidth"" W x $itemHeight"" H") | Out-Null }; if ($declaredValue -gt 0) { $resultsText.AppendLine("Declared Val:$($declaredValue.ToString("C"))") | Out-Null }; $resultsText.AppendLine("--------------------------------------------------------") | Out-Null; $resultsText.AppendLine("Carrier Options:") | Out-Null; $permittedCentralKeys = @{}; $permittedSAIAKeys = @{}; $permittedRLKeys = @{}; try { $permittedCentralKeys = Get-PermittedKeys -AllKeys $script:allCentralKeys -AllowedKeyNames $script:selectedCustomerProfile.AllowedCentralKeys; $permittedSAIAKeys = Get-PermittedKeys -AllKeys $script:allSAIAKeys -AllowedKeyNames $script:selectedCustomerProfile.AllowedSAIAKeys; $permittedRLKeys = Get-PermittedKeys -AllKeys $script:allRLKeys -AllowedKeyNames $script:selectedCustomerProfile.AllowedRLKeys } catch { [System.Windows.Forms.MessageBox]::Show("Error getting permitted keys for customer: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); $textboxResults.Text = "Error getting permitted keys for customer."; return }; $quoteTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'; $finalQuotes = @(); $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'; try { $centralRates = @{}; if ($permittedCentralKeys.Count -gt 0) { $textboxResults.AppendText("Querying Central Transport..." + "`r`n"); $mainForm.Refresh(); foreach ($tariffFileName in ($permittedCentralKeys.Keys | Sort-Object)) { try { $keyData = $permittedCentralKeys[$tariffFileName]; if (-not $keyData.ContainsKey('accessCode') -or -not $keyData.ContainsKey('customerNumber')) { throw "'accessCode'/'customerNumber' missing." }; $cost = Invoke-CentralTransportApi -ApiKey $keyData.accessCode -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -customerNumber $keyData.customerNumber; if ($cost -ne $null) { $centralRates[$tariffFileName] = $cost } } catch { $resultsText.AppendLine("  Central ($tariffFileName): Error - $($_.Exception.Message)") | Out-Null } }; $centralLowest = Get-MinimumRate -RateResults $centralRates; if ($centralLowest -ne $null) { $lowestTariffData = $permittedCentralKeys[$centralLowest.TariffName]; $marginToUse = $Global:DefaultMarginPercentage; if ($lowestTariffData -and $lowestTariffData.ContainsKey('MarginPercent')) { try { $marginToUse = [double]$lowestTariffData.MarginPercent } catch {} }; $centralQuoteDetails = Calculate-QuotePrice -LowestCarrierCost $centralLowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $marginToUse; if ($centralQuoteDetails.FinalPrice -ne $null) { $resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Central Transport", $centralQuoteDetails.FinalPrice.ToString("C"), $centralLowest.TariffName)) | Out-Null; $finalQuotes += [PSCustomObject]@{Carrier='Central Transport'; Tariff=$centralLowest.TariffName; Price=$centralQuoteDetails.FinalPrice; Cost=$centralLowest.Cost}; Write-QuoteToHistory -Carrier 'Central Transport' -TariffName $centralLowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $centralLowest.Cost -FinalQuotedPrice $centralQuoteDetails.FinalPrice -QuoteTimestamp $quoteTimestamp } else { $resultsText.AppendLine("  Central Transport    : Error calculating final price.") | Out-Null } } else { $resultsText.AppendLine("  Central Transport    : No valid rates found.") | Out-Null } } else { $resultsText.AppendLine("  Central Transport    : No permitted keys found for this customer.") | Out-Null }; $saiaRates = @{}; if ($permittedSAIAKeys.Count -gt 0) { $textboxResults.AppendText("Querying SAIA..." + "`r`n"); $mainForm.Refresh(); foreach ($tariffFileName in ($permittedSAIAKeys.Keys | Sort-Object)) { try { $keyData = $permittedSAIAKeys[$tariffFileName]; $cost = Invoke-SAIAApi -OriginZip $originZip -DestinationZip $destZip -OriginCity $originCity -OriginState $originState -DestinationCity $destCity -DestinationState $destState -Weight $weight -Class $freightClass -KeyData $keyData; if ($cost -ne $null) { $saiaRates[$tariffFileName] = $cost } } catch { $resultsText.AppendLine("  SAIA ($tariffFileName): Error - $($_.Exception.Message)") | Out-Null } }; $saiaLowest = Get-MinimumRate -RateResults $saiaRates; if ($saiaLowest -ne $null) { $lowestTariffData = $permittedSAIAKeys[$saiaLowest.TariffName]; $marginToUse = $Global:DefaultMarginPercentage; if ($lowestTariffData -and $lowestTariffData.ContainsKey('MarginPercent')) { try { $marginToUse = [double]$lowestTariffData.MarginPercent } catch {} }; $saiaQuoteDetails = Calculate-QuotePrice -LowestCarrierCost $saiaLowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $marginToUse; if ($saiaQuoteDetails.FinalPrice -ne $null) { $resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "SAIA", $saiaQuoteDetails.FinalPrice.ToString("C"), $saiaLowest.TariffName)) | Out-Null; $finalQuotes += [PSCustomObject]@{Carrier='SAIA'; Tariff=$saiaLowest.TariffName; Price=$saiaQuoteDetails.FinalPrice; Cost=$saiaLowest.Cost}; Write-QuoteToHistory -Carrier 'SAIA' -TariffName $saiaLowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $saiaLowest.Cost -FinalQuotedPrice $saiaQuoteDetails.FinalPrice -QuoteTimestamp $quoteTimestamp } else { $resultsText.AppendLine("  SAIA                 : Error calculating final price.") | Out-Null } } else { $resultsText.AppendLine("  SAIA                 : No valid rates found.") | Out-Null } } else { $resultsText.AppendLine("  SAIA                 : No permitted keys found for this customer.") | Out-Null }; $rlRates = @{}; if ($permittedRLKeys.Count -gt 0) { $textboxResults.AppendText("Querying R+L Carriers..." + "`r`n"); $mainForm.Refresh(); foreach ($tariffFileName in ($permittedRLKeys.Keys | Sort-Object)) { try { $keyData = $permittedRLKeys[$tariffFileName]; if (-not $keyData.ContainsKey('APIKey')) { throw "'APIKey' missing." }; $cost = Invoke-RLApi -OriginZip $originZip -DestinationZip $destZip -Weight $weight -Class $freightClass -KeyData $keyData -ShipmentDetails $optionalShipmentDetails; if ($cost -ne $null) { $rlRates[$tariffFileName] = $cost } } catch { $resultsText.AppendLine("  R+L ($tariffFileName): Error - $($_.Exception.Message)") | Out-Null } }; $rlLowest = Get-MinimumRate -RateResults $rlRates; if ($rlLowest -ne $null) { $lowestTariffData = $permittedRLKeys[$rlLowest.TariffName]; $marginToUse = $Global:DefaultMarginPercentage; if ($lowestTariffData -and $lowestTariffData.ContainsKey('MarginPercent')) { try { $marginToUse = [double]$lowestTariffData.MarginPercent } catch {} }; $rlQuoteDetails = Calculate-QuotePrice -LowestCarrierCost $rlLowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $marginToUse; if ($rlQuoteDetails.FinalPrice -ne $null) { $resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "R+L Carriers", $rlQuoteDetails.FinalPrice.ToString("C"), $rlLowest.TariffName)) | Out-Null; $finalQuotes += [PSCustomObject]@{Carrier='R+L Carriers'; Tariff=$rlLowest.TariffName; Price=$rlQuoteDetails.FinalPrice; Cost=$rlLowest.Cost}; Write-QuoteToHistory -Carrier 'R+L Carriers' -TariffName $rlLowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $rlLowest.Cost -FinalQuotedPrice $rlQuoteDetails.FinalPrice -QuoteTimestamp $quoteTimestamp } else { $resultsText.AppendLine("  R+L Carriers         : Error calculating final price.") | Out-Null } } else { $resultsText.AppendLine("  R+L Carriers         : No valid rates found.") | Out-Null } } else { $resultsText.AppendLine("  R+L Carriers         : No permitted keys found for this customer.") | Out-Null } } finally { $VerbosePreference = $CurrentVerbosePreference }; $resultsText.AppendLine("========================================================") | Out-Null; $resultsText.AppendLine("* Prices are estimates and subject to verification. *") | Out-Null; $resultsText.AppendLine("--- End of Quote ---") | Out-Null; $textboxResults.Text = $resultsText.ToString(); $statusBar.Text = "Quote generation complete for Customer: $($script:selectedCustomerProfile.CustomerName)." })
+
+# --- MODIFICATION: Store the script block for re-use and dynamic Y-positioning ---
+$comboBoxReportType_SelectedIndexChanged_ScriptBlock = {
+    param($sender, $e) # Standard event handler parameters
+    $selectedReport = $comboBoxReportType.SelectedItem.ToString()
     
-    function Add-PanelLabeledTextBox {
-        param($panel, $controlName, $labelText, $initialValue, [ref]$currentYPos, $toolTipText=$null)
-        $label = New-Object System.Windows.Forms.Label; $label.Text = $labelText; $label.Location = New-Object System.Drawing.Point($leftMargin, $currentYPos.Value); $label.Size = New-Object System.Drawing.Size($labelWidth, 20); $panel.Controls.Add($label)
-        $textBox = New-Object System.Windows.Forms.TextBox; $textBox.Name = $controlName; $textBox.Text = $initialValue; $textBox.Location = New-Object System.Drawing.Point($textLeftMargin, $currentYPos.Value); $textBox.Size = New-Object System.Drawing.Size($textWidth, 20)
-        if ($toolTipText) { $toolTip = New-Object System.Windows.Forms.ToolTip; $toolTip.SetToolTip($textBox, $toolTipText) }
-        $panel.Controls.Add($textBox); $currentYPos.Value += 30
-        # $script:tempControls[$controlName] = $textBox # Store if needed for other dynamic access
-        return $textBox # Return for direct assignment if preferred, though not strictly needed if finding by name
-    }
+    # Base Y position after the static controls (Customer and Report Type dropdowns)
+    $dynamicY = $reportsPanelY + (2 * $reportsControlSpacing) 
 
-    Add-PanelLabeledTextBox $ParentPanel "textOriginZip" "Origin ZIP (5 digits):" "" ([ref]$yPos) -toolTipText "Enter 5-digit origin ZIP code."
-    Add-PanelLabeledTextBox $ParentPanel "textOriginCity" "Origin City:" "" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textOriginState" "Origin State (2 letters):" "" ([ref]$yPos) -toolTipText "e.g., TX, CA"
-    $yPos += 5 
-    Add-PanelLabeledTextBox $ParentPanel "textDestZip" "Destination ZIP (5 digits):" "" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textDestCity" "Destination City:" "" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textDestState" "Destination State (2 letters):" "" ([ref]$yPos)
-    $yPos += 5
-    Add-PanelLabeledTextBox $ParentPanel "textWeight" "Total Weight (lbs):" "" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textFreightClass" "Freight Class (50-500):" "70" ([ref]$yPos)
-    $yPos += 5
-    Add-PanelLabeledTextBox $ParentPanel "textPieces" "Number of Pieces (opt):" "1" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textLength" "Length/piece (in, opt):" "48" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textWidth" "Width/piece (in, opt):" "40" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textHeight" "Height/piece (in, opt):" "40" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textPkgType" "Packaging (PLT, CTN, opt):" "PLT" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textDesc" "Description (opt):" "Freight" ([ref]$yPos)
-    Add-PanelLabeledTextBox $ParentPanel "textDeclaredValue" "Declared Value (USD, opt):" "0.00" ([ref]$yPos)
-    
-    $runQuoteButton = New-Object System.Windows.Forms.Button; $runQuoteButton.Text = "Get Quote"; 
-    $runQuoteButton.Size = New-Object System.Drawing.Size(140, 35); 
-    $panelWidthInt = [int]$ParentPanel.Width
-    $buttonWidthInt = [int]$runQuoteButton.Width
-    $runQuoteButton.Location = New-Object System.Drawing.Point( (($panelWidthInt - $buttonWidthInt) / 2), ($yPos + 15) ) 
-    $runQuoteButton.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    
-    $runQuoteButton.Add_Click({
-        # Retrieve controls directly from the ParentPanel by name inside the click event
-        $originZipCtrl = $ParentPanel.Controls.Find("textOriginZip", $true)[0]
-        $originCityCtrl = $ParentPanel.Controls.Find("textOriginCity", $true)[0]
-        $originStateCtrl = $ParentPanel.Controls.Find("textOriginState", $true)[0]
-        $destZipCtrl = $ParentPanel.Controls.Find("textDestZip", $true)[0]
-        $destCityCtrl = $ParentPanel.Controls.Find("textDestCity", $true)[0]
-        $destStateCtrl = $ParentPanel.Controls.Find("textDestState", $true)[0]
-        $weightCtrl = $ParentPanel.Controls.Find("textWeight", $true)[0]
-        $freightClassCtrl = $ParentPanel.Controls.Find("textFreightClass", $true)[0]
-        $piecesCtrl = $ParentPanel.Controls.Find("textPieces", $true)[0]
-        $lengthCtrl = $ParentPanel.Controls.Find("textLength", $true)[0]
-        $widthCtrl = $ParentPanel.Controls.Find("textWidth", $true)[0]
-        $heightCtrl = $ParentPanel.Controls.Find("textHeight", $true)[0]
-        $pkgTypeCtrl = $ParentPanel.Controls.Find("textPkgType", $true)[0]
-        $descCtrl = $ParentPanel.Controls.Find("textDesc", $true)[0]
-        $declaredValueCtrl = $ParentPanel.Controls.Find("textDeclaredValue", $true)[0]
+    # Default visibility states
+    $groupBoxReportCarrierSelect.Visible = $false
+    $groupBoxReportTariffSelect.Visible = $false
+    $labelReportTariff2.Visible = $false
+    $listBoxReportTariff2.Visible = $false
+    $groupBoxReportAspInput.Visible = $false
+    $checkBoxApplyMargins.Visible = $false
 
-        # Validation using retrieved controls
-        if ($null -eq $originZipCtrl) { [System.Windows.Forms.MessageBox]::Show("Internal error: OriginZip control could not be found on panel.", "GUI Error", "OK", "Error"); return }
-        if (-not ($originZipCtrl.Text -match '^\d{5}$')) { [System.Windows.Forms.MessageBox]::Show("Invalid Origin ZIP.", "Validation Error", "OK", "Error"); $originZipCtrl.Focus(); return }
-        if ([string]::IsNullOrWhiteSpace($originCityCtrl.Text)) { [System.Windows.Forms.MessageBox]::Show("Origin City is required.", "Validation Error", "OK", "Error"); $originCityCtrl.Focus(); return }
-        if (-not ($originStateCtrl.Text -match '^[A-Za-z]{2}$')) { [System.Windows.Forms.MessageBox]::Show("Invalid Origin State (e.g., TX).", "Validation Error", "OK", "Error"); $originStateCtrl.Focus(); return }
-        if (-not ($destZipCtrl.Text -match '^\d{5}$')) { [System.Windows.Forms.MessageBox]::Show("Invalid Destination ZIP.", "Validation Error", "OK", "Error"); $destZipCtrl.Focus(); return }
-        if ([string]::IsNullOrWhiteSpace($destCityCtrl.Text)) { [System.Windows.Forms.MessageBox]::Show("Destination City is required.", "Validation Error", "OK", "Error"); $destCityCtrl.Focus(); return }
-        if (-not ($destStateCtrl.Text -match '^[A-Za-z]{2}$')) { [System.Windows.Forms.MessageBox]::Show("Invalid Destination State (e.g., CA).", "Validation Error", "OK", "Error"); $destStateCtrl.Focus(); return }
+    # Logic for single-carrier specific UI elements
+    if ($selectedReport -eq "Carrier Comparison" -or $selectedReport -eq "Avg Required Margin" -or $selectedReport -eq "Required Margin for ASP") {
+        $groupBoxReportCarrierSelect.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
+        $groupBoxReportCarrierSelect.Visible = $true
+        $dynamicY += $groupBoxReportCarrierSelect.Height + $verticalPaddingBetweenControls
         
-        $weightVal = 0.0; if (-not [decimal]::TryParse($weightCtrl.Text, [ref]$weightVal) -or $weightVal -le 0) { [System.Windows.Forms.MessageBox]::Show("Invalid Weight. Must be a positive number.", "Validation Error", "OK", "Error"); $weightCtrl.Focus(); return }
-        $classValText = $freightClassCtrl.Text; $classValNum = 0.0; 
-        if (-not [double]::TryParse($classValText, [ref]$classValNum) -or $classValNum -lt 50 -or $classValNum -gt 500) { 
-            [System.Windows.Forms.MessageBox]::Show("Invalid Freight Class. Must be a number between 50 and 500 (e.g., 77.5).", "Validation Error", "OK", "Error"); $freightClassCtrl.Focus(); return 
-        }
-
-        $piecesVal = 1; if (-not [int]::TryParse($piecesCtrl.Text, [ref]$piecesVal) -or $piecesVal -le 0) { $piecesVal = 1 }
-        $lengthVal = 48.0; if (-not [double]::TryParse($lengthCtrl.Text, [ref]$lengthVal)) { $lengthVal = 48.0 }
-        $widthVal = 40.0; if (-not [double]::TryParse($widthCtrl.Text, [ref]$widthVal)) { $widthVal = 40.0 }
-        $heightVal = 40.0; if (-not [double]::TryParse($heightCtrl.Text, [ref]$heightVal)) { $heightVal = 40.0 }
-        $pkgTypeVal = "PLT"; if (-not [string]::IsNullOrWhiteSpace($pkgTypeCtrl.Text)) { $pkgTypeVal = $pkgTypeCtrl.Text.Trim().ToUpper() }
-        $descVal = "Freight"; if (-not [string]::IsNullOrWhiteSpace($descCtrl.Text)) { $descVal = $descCtrl.Text.Trim() }
-        $decValueVal = 0.0; if (-not [decimal]::TryParse($declaredValueCtrl.Text, [ref]$decValueVal)) { $decValueVal = 0.0 }
-
-        [System.Windows.Forms.MessageBox]::Show("Processing quote... Please check the PowerShell console for results.", "Processing Quote", "OK", "Information")
-        $ParentPanel.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-        $runQuoteButton.Enabled = $false
-
-        Run-SingleQuote -Username $Global:currentUserProfile.Username `
-                        -UserConfig $Global:currentUserProfile `
-                        -AllCentralKeys $Global:allCentralKeys `
-                        -AllSAIAKeys $Global:allSAIAKeys `
-                        -AllRLKeys $Global:allRLKeys `
-                        -AllAverittKeys $Global:allAverittKeys `
-                        -OriginZipParam $originZipCtrl.Text `
-                        -OriginCityParam $originCityCtrl.Text `
-                        -OriginStateParam $originStateCtrl.Text.ToUpper() `
-                        -DestinationZipParam $destZipCtrl.Text `
-                        -DestinationCityParam $destCityCtrl.Text `
-                        -DestinationStateParam $destStateCtrl.Text.ToUpper() `
-                        -WeightParam $weightVal `
-                        -FreightClassParam $classValText ` 
-                        -PiecesParam $piecesVal `
-                        -ItemLengthParam $lengthVal `
-                        -ItemWidthParam $widthVal `
-                        -ItemHeightParam $heightVal `
-                        -PackagingTypeParam $pkgTypeVal `
-                        -DescriptionParam $descVal `
-                        -DeclaredValueParam $decValueVal
+        $groupBoxReportTariffSelect.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
+        $groupBoxReportTariffSelect.Visible = $true
+        $dynamicY += $groupBoxReportTariffSelect.Height + $verticalPaddingBetweenControls
         
-        Write-Host "`nSingle quote process from GUI input finished. Results are in the console." -ForegroundColor Yellow
-        $ParentPanel.Cursor = [System.Windows.Forms.Cursors]::Default
-        $runQuoteButton.Enabled = $true
-    })
-    $ParentPanel.Controls.Add($runQuoteButton)
-}
-
-# --- Function to Display Default Dashboard View ---
-function Display-DashboardView {
-    param(
-        [Parameter(Mandatory=$true)]
-        [System.Windows.Forms.Panel]$ParentPanel
-    )
-    $ParentPanel.Controls.Clear()
-    $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Text = "TMS Dashboard Area - Select an option from the menu."
-    $infoLabel.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Regular)
-    $infoLabel.TextAlign = "MiddleCenter"
-    $infoLabel.Dock = "Fill"
-    $ParentPanel.Controls.Add($infoLabel)
-}
-
-
-# --- Main Application Window Function ---
-function Show-MainWindow {
-    $mainForm = New-Object System.Windows.Forms.Form
-    $mainForm.Text = "Transportation Management System - Welcome $($Global:currentUserProfile.Username)"
-    $mainForm.Size = New-Object System.Drawing.Size(850, 650) 
-    $mainForm.StartPosition = "CenterScreen"
-    $mainForm.WindowState = "Normal" 
-
-    $Global:mainContentPanel = New-Object System.Windows.Forms.Panel 
-    $mainContentPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $mainContentPanel.BackColor = [System.Drawing.Color]::WhiteSmoke 
-    
-    $menuStrip = New-Object System.Windows.Forms.MenuStrip
-    $menuStrip.Dock = [System.Windows.Forms.DockStyle]::Top 
-
-    # File Menu
-    $fileMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&File") 
-    $dashboardMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Dashboard")
-    $dashboardMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel })
-    $logoutMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Logout")
-    $logoutMenuItem.Add_Click({ 
-        $Global:currentUserProfile = $null; $mainForm.Close(); Write-Host "User logged out. Restarting login..."
-        Start-Sleep -Seconds 1; if (Show-LoginWindow) { Show-MainWindow } else { [System.Windows.Forms.Application]::Exit() }
-    })
-    $exitMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("E&xit")
-    $exitMenuItem.Add_Click({ [System.Windows.Forms.Application]::Exit() })
-    $fileMenuItem.DropDownItems.AddRange(@($dashboardMenuItem, $logoutMenuItem, (New-Object System.Windows.Forms.ToolStripSeparator), $exitMenuItem))
-    $menuStrip.Items.Add($fileMenuItem)
-
-    # Quote Menu
-    $quoteMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Quoting")
-    $singleQuoteMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Single Shipment Quote")
-    $singleQuoteMenuItem.Add_Click({
-        Display-SingleQuoteViewInPanel -ParentPanel $mainContentPanel
-    })
-    $quoteMenuItem.DropDownItems.Add($singleQuoteMenuItem)
-    $menuStrip.Items.Add($quoteMenuItem)
-
-    # Reports Menu
-    $reportsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Reports")
-    $carrierReportsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("Carrier &Specific Reports")
-        $centralReportsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Central Transport"); $centralReportsMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; Show-CarrierReportWindow -CarrierName "Central" -AllCarrierKeys $Global:allCentralKeys -UserConfig $Global:currentUserProfile -UserReportsFolder $Global:currentUserReportsFolder})
-        $saiaReportsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&SAIA"); $saiaReportsMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; Show-CarrierReportWindow -CarrierName "SAIA" -AllCarrierKeys $Global:allSAIAKeys -UserConfig $Global:currentUserProfile -UserReportsFolder $Global:currentUserReportsFolder})
-        $rlReportsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("R+&L Carriers"); $rlReportsMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; Show-CarrierReportWindow -CarrierName "RL" -AllCarrierKeys $Global:allRLKeys -UserConfig $Global:currentUserProfile -UserReportsFolder $Global:currentUserReportsFolder})
-        $averittReportsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Averitt"); $averittReportsMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; Show-CarrierReportWindow -CarrierName "Averitt" -AllCarrierKeys $Global:allAverittKeys -UserConfig $Global:currentUserProfile -UserReportsFolder $Global:currentUserReportsFolder})
-    $carrierReportsMenuItem.DropDownItems.AddRange(@($centralReportsMenuItem, $saiaReportsMenuItem, $rlReportsMenuItem, $averittReportsMenuItem))
-    $reportsMenuItem.DropDownItems.Add($carrierReportsMenuItem)
-    $crossCarrierASPMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Cross-Carrier ASP Analysis"); $crossCarrierASPMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; if(Get-Command Run-CrossCarrierASPAnalysis -EA SilentlyContinue){ [System.Windows.Forms.MessageBox]::Show("Cross-Carrier ASP Analysis will run in console.", "Console Interaction", "OK", "Information"); Run-CrossCarrierASPAnalysis -UserProfile $Global:currentUserProfile -ReportsBaseFolder $script:reportsBaseFolderPath -AllCentralKeys $Global:allCentralKeys -AllSAIAKeys $Global:allSAIAKeys -AllRLKeys $Global:allRLKeys -AllAverittKeys $Global:allAverittKeys; Write-Host "`nCross-Carrier ASP finished." -FG Yellow } else { [System.Windows.Forms.MessageBox]::Show("Function not found.", "Error")} })
-    $reportsMenuItem.DropDownItems.Add($crossCarrierASPMenuItem)
-    $manageMyReportsItem = New-Object System.Windows.Forms.ToolStripMenuItem("&Manage My Reports"); $manageMyReportsItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; if (Get-Command Manage-UserReports -EA SilentlyContinue) { Manage-UserReports -UserReportsFolder $Global:currentUserReportsFolder } else {[System.Windows.Forms.MessageBox]::Show("Function not found.", "Error")} })
-    $reportsMenuItem.DropDownItems.Add($manageMyReportsItem)
-    $menuStrip.Items.Add($reportsMenuItem)
-    
-    # Settings Menu
-    $settingsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("S&ettings")
-    $manageMarginsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage Tariff &Margins"); $manageMarginsMenuItem.Add_Click({ Display-DashboardView -ParentPanel $mainContentPanel; if(Get-Command Show-SettingsMenu -EA SilentlyContinue){  [System.Windows.Forms.MessageBox]::Show("Settings will run in console.", "Console Interaction", "OK", "Information"); Show-SettingsMenu -UserProfile $Global:currentUserProfile -AllCentralKeys $Global:allCentralKeys -AllSAIAKeys $Global:allSAIAKeys -AllRLKeys $Global:allRLKeys -AllAverittKeys $Global:allAverittKeys; Write-Host "`nSettings management finished." -FG Yellow } else { [System.Windows.Forms.MessageBox]::Show("Function not found.", "Error")} })
-    $settingsMenuItem.DropDownItems.Add($manageMarginsMenuItem)
-    $menuStrip.Items.Add($settingsMenuItem)
-
-    $mainForm.Controls.Add($mainContentPanel) 
-    $mainForm.Controls.Add($menuStrip) 
-    
-    $statusBar = New-Object System.Windows.Forms.StatusBar; $statusBar.Text = "Ready"; $mainForm.Controls.Add($statusBar)
-    
-    Display-DashboardView -ParentPanel $mainContentPanel
-    
-    $mainForm.ShowDialog() 
-}
-
-# --- Carrier Report Window Function (Generic for launching reports) ---
-function Show-CarrierReportWindow {
-    param(
-        [string]$CarrierName,
-        [hashtable]$AllCarrierKeys, 
-        [hashtable]$UserConfig,     
-        [string]$UserReportsFolder 
-    )
-
-    $reportForm = New-Object System.Windows.Forms.Form
-    $reportForm.Text = "$CarrierName Reports"
-    $reportForm.Size = New-Object System.Drawing.Size(520, 420) 
-    $reportForm.StartPosition = "CenterParent"
-    $reportForm.FormBorderStyle = 'FixedDialog'
-
-    $yPos = 20
-    $labelTitle = New-Object System.Windows.Forms.Label; $labelTitle.Text = "$CarrierName Report Options for $($UserConfig.Username):"; $labelTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold); $labelTitle.Location = New-Object System.Drawing.Point(20, $yPos); $labelTitle.AutoSize=$true; $reportForm.Controls.Add($labelTitle); $yPos += 35
-
-    $permittedKeys = $null
-    $allowedKeysPropertyName = "Allowed${CarrierName}Keys" 
-    if ($CarrierName -eq "RL") { $allowedKeysPropertyName = "AllowedRLKeys" } 
-
-    if ($UserConfig.ContainsKey($allowedKeysPropertyName) -and $UserConfig.$allowedKeysPropertyName -is [array]) {
-        $allowedKeyNames = $UserConfig.$allowedKeysPropertyName
-        $permittedKeys = Get-PermittedKeys -AllKeys $AllCarrierKeys -AllowedKeyNames $allowedKeyNames
+        if ($selectedReport -eq "Carrier Comparison" -or $selectedReport -eq "Avg Required Margin") {
+            $labelReportTariff2.Visible = $true
+            $listBoxReportTariff2.Visible = $true
+            $labelReportTariff1.Text = "Tariff 1 (Base):"
+        } else { # This is "Required Margin for ASP"
+            $labelReportTariff1.Text = "Select Tariff:"
+        }
     }
+    # If not a single carrier report, $dynamicY remains as is (after Customer and Report Type dropdowns)
 
-    if ($null -eq $permittedKeys -or $permittedKeys.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("You do not have any permitted keys/tariffs for $CarrierName. Please check your user profile settings in the respective customer account file.", "Permissions Error", "OK", "Error")
-        $reportForm.Dispose(); return
+    # Position CSV controls
+    $labelSelectCsv.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
+    $textboxCsvPath.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + 5), ($dynamicY - 3))
+    $buttonSelectCsv.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + $reportsInputWidth + 10), ($dynamicY - 5))
+    $dynamicY += $reportsControlSpacing 
+
+    # Visibility and positioning logic for ASP input and Apply Margins checkbox
+    if ($selectedReport -eq "Required Margin for ASP") {
+        $groupBoxReportAspInput.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
+        $groupBoxReportAspInput.Visible = $true
+        $checkBoxApplyMargins.Visible = $false 
+        $dynamicY += $groupBoxReportAspInput.Height + $verticalPaddingBetweenControls
+    } elseif ($selectedReport -eq "Cross-Carrier ASP Analysis") {
+        $groupBoxReportAspInput.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
+        $groupBoxReportAspInput.Visible = $true
+        $dynamicY += $groupBoxReportAspInput.Height + $verticalPaddingBetweenControls
+        
+        $checkBoxApplyMargins.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
+        $checkBoxApplyMargins.Visible = $true
+        $dynamicY += $checkBoxApplyMargins.Height + $verticalPaddingBetweenControls
+    } elseif ($selectedReport -eq "Margins by History") {
+        $groupBoxReportAspInput.Visible = $false 
+        
+        $checkBoxApplyMargins.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY) 
+        $checkBoxApplyMargins.Visible = $true
+        $dynamicY += $checkBoxApplyMargins.Height + $verticalPaddingBetweenControls
+    } else { 
+        $groupBoxReportAspInput.Visible = $false
+        $checkBoxApplyMargins.Visible = $false
     }
-
-    $groupBoxReportType = New-Object System.Windows.Forms.GroupBox; $groupBoxReportType.Text = "Select Report Type"; $groupBoxReportType.Location = New-Object System.Drawing.Point(20, $yPos); $groupBoxReportType.Size = New-Object System.Drawing.Size(460, 100); $reportForm.Controls.Add($groupBoxReportType); $yPos += 110
     
-    $radioComparison = New-Object System.Windows.Forms.RadioButton; $radioComparison.Text = "Comparison Report"; $radioComparison.Location = New-Object System.Drawing.Point(15, 25); $radioComparison.AutoSize=$true; $radioComparison.Checked = $true; $groupBoxReportType.Controls.Add($radioComparison)
-    $radioAvgMargin = New-Object System.Windows.Forms.RadioButton; $radioAvgMargin.Text = "Average Required Margin (Base vs. Comparison)"; $radioAvgMargin.Location = New-Object System.Drawing.Point(15, 50); $radioAvgMargin.AutoSize=$true; $groupBoxReportType.Controls.Add($radioAvgMargin)
-    $radioMarginASP = New-Object System.Windows.Forms.RadioButton; $radioMarginASP.Text = "Required Margin for Desired ASP (Single Tariff)"; $radioMarginASP.Location = New-Object System.Drawing.Point(15, 75); $radioMarginASP.AutoSize=$true; $groupBoxReportType.Controls.Add($radioMarginASP)
+    $buttonRunReport.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + 5), $dynamicY)
+    $dynamicY += $buttonRunReport.Height + $verticalPaddingBetweenControls
+    $textboxReportResults.Location = New-Object System.Drawing.Point($reportsPanelX, $dynamicY)
 
-    $labelKey1 = New-Object System.Windows.Forms.Label; $labelKey1.Text = "Tariff/Key 1 (or Base Key):"; $labelKey1.Location = New-Object System.Drawing.Point(20, $yPos); $labelKey1.AutoSize=$true; $reportForm.Controls.Add($labelKey1)
-    $comboKey1 = New-Object System.Windows.Forms.ComboBox; $comboKey1.Location = New-Object System.Drawing.Point(250, $yPos - 3); $comboKey1.Size = New-Object System.Drawing.Size(230, 21); $comboKey1.DropDownStyle = "DropDownList"
-    $permittedKeys.GetEnumerator() | Sort-Object Value.Name | ForEach-Object { $comboKey1.Items.Add($_.Value.Name) } 
-    if($comboKey1.Items.Count -gt 0) { $comboKey1.SelectedIndex = 0 }; $reportForm.Controls.Add($comboKey1); $yPos += 30
-
-    $labelKey2 = New-Object System.Windows.Forms.Label; $labelKey2.Text = "Tariff/Key 2 (for Comparison/Avg Margin):"; $labelKey2.Location = New-Object System.Drawing.Point(20, $yPos); $labelKey2.AutoSize=$true; $reportForm.Controls.Add($labelKey2)
-    $comboKey2 = New-Object System.Windows.Forms.ComboBox; $comboKey2.Location = New-Object System.Drawing.Point(250, $yPos - 3); $comboKey2.Size = New-Object System.Drawing.Size(230, 21); $comboKey2.DropDownStyle = "DropDownList"
-    $permittedKeys.GetEnumerator() | Sort-Object Value.Name | ForEach-Object { $comboKey2.Items.Add($_.Value.Name) }
-    if($comboKey2.Items.Count -gt 1) { $comboKey2.SelectedIndex = 1 } elseif($comboKey2.Items.Count -gt 0) { $comboKey2.SelectedIndex = 0 }; $reportForm.Controls.Add($comboKey2); $yPos += 30
-    
-    $labelASP = New-Object System.Windows.Forms.Label; $labelASP.Text = "Desired ASP (for Margin for ASP report):"; $labelASP.Location = New-Object System.Drawing.Point(20, $yPos); $labelASP.AutoSize=$true; $reportForm.Controls.Add($labelASP)
-    $textASP = New-Object System.Windows.Forms.TextBox; $textASP.Location = New-Object System.Drawing.Point(250, $yPos -3); $textASP.Size = New-Object System.Drawing.Size(100,20); $textASP.Text="0.00"; $reportForm.Controls.Add($textASP); $yPos += 30
-
-    $buttonSelectCsv = New-Object System.Windows.Forms.Button; $buttonSelectCsv.Text = "Select CSV Data File..."; $buttonSelectCsv.Location = New-Object System.Drawing.Point(20, $yPos); $buttonSelectCsv.Size = New-Object System.Drawing.Size(210, 25); $reportForm.Controls.Add($buttonSelectCsv)
-    $labelCsvPath = New-Object System.Windows.Forms.Label; $labelCsvPath.Location = New-Object System.Drawing.Point(250, $yPos + 4); $labelCsvPath.Size = New-Object System.Drawing.Size(230, 20); $labelCsvPath.Text = "No CSV selected"; $reportForm.Controls.Add($labelCsvPath); $yPos += 40
-    $buttonSelectCsv.Add_Click({
-        $dialogTitle = "Select Shipment Data CSV for $CarrierName Report"
-        if ($CarrierName -eq "Averitt") { 
-            $dialogTitle = "Select DETAILED Shipment CSV for Averitt (e.g., shipments.csv format)"
-        }
-        $selectedCsv = Select-CsvFile -DialogTitle $dialogTitle -InitialDirectory $script:shipmentDataFolderPath
-        if ($selectedCsv) { $labelCsvPath.Text = (Split-Path $selectedCsv -Leaf); $labelCsvPath.Tag = $selectedCsv } 
-    })
-    
-    $buttonRunReport = New-Object System.Windows.Forms.Button; $buttonRunReport.Text = "Run Report"; $buttonRunReport.Location = New-Object System.Drawing.Point(200, $yPos); $buttonRunReport.Size = New-Object System.Drawing.Size(120, 30); $reportForm.Controls.Add($buttonRunReport)
-    $buttonRunReport.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $buttonRunReport.Add_Click({
-        $selectedKey1Name = $comboKey1.SelectedItem
-        $selectedKey2Name = $comboKey2.SelectedItem
-        $csvPath = $labelCsvPath.Tag 
-
-        if ([string]::IsNullOrWhiteSpace($selectedKey1Name)) { [System.Windows.Forms.MessageBox]::Show("Please select Tariff/Key 1.", "Input Error", "OK", "Error"); return }
-        if ([string]::IsNullOrWhiteSpace($csvPath)) { [System.Windows.Forms.MessageBox]::Show("Please select a CSV data file.", "Input Error", "OK", "Error"); return }
-
-        $key1Details = $permittedKeys.GetEnumerator() | Where-Object {$_.Value.Name -eq $selectedKey1Name} | Select-Object -First 1 -ExpandProperty Value
-        $key2Details = $null
-        if (-not [string]::IsNullOrWhiteSpace($selectedKey2Name)) {
-            $key2Details = $permittedKeys.GetEnumerator() | Where-Object {$_.Value.Name -eq $selectedKey2Name} | Select-Object -First 1 -ExpandProperty Value
-        }
-
-        $reportPath = $null; $reportFunctionName = $null; $params = @{}
-
-        if ($radioComparison.Checked) {
-            if ($null -eq $key2Details) { [System.Windows.Forms.MessageBox]::Show("Please select Tariff/Key 2 for Comparison report.", "Input Error", "OK", "Error"); return }
-            if ($key1Details.Name -eq $key2Details.Name) { [System.Windows.Forms.MessageBox]::Show("Tariff/Key 1 and Tariff/Key 2 must be different for Comparison.", "Input Error", "OK", "Error"); return }
-            $reportFunctionName = "Run-${CarrierName}ComparisonReportGUI"
-            $params = @{ Key1Data = $key1Details; Key2Data = $key2Details; CsvFilePath = $csvPath; Username = $UserConfig.Username; UserReportsFolder = $UserReportsFolder }
-        } elseif ($radioAvgMargin.Checked) {
-            if ($null -eq $key2Details) { [System.Windows.Forms.MessageBox]::Show("Please select Tariff/Key 2 for Avg Req Margin report (to compare against).", "Input Error", "OK", "Error"); return }
-            if ($key1Details.Name -eq $key2Details.Name) { [System.Windows.Forms.MessageBox]::Show("Base Key and Comparison Key must be different.", "Input Error", "OK", "Error"); return }
-            $reportFunctionName = "Run-${CarrierName}MarginReportGUI" 
-            $params = @{ BaseKeyData = $key1Details; ComparisonKeyData = $key2Details; CsvFilePath = $csvPath; Username = $UserConfig.Username; UserReportsFolder = $UserReportsFolder }
-        } elseif ($radioMarginASP.Checked) {
-            $desiredASPValue = 0.0
-            if (-not [decimal]::TryParse($textASP.Text, [ref]$desiredASPValue) -or $desiredASPValue -le 0) {
-                [System.Windows.Forms.MessageBox]::Show("Please enter a valid positive Desired ASP value.", "Input Error", "OK", "Error"); return
-            }
-            $reportFunctionName = "Calculate-${CarrierName}MarginForASPReportGUI"
-            $params = @{ CostAccountInfo = $key1Details; DesiredASP = $desiredASPValue; CsvFilePath = $csvPath; Username = $UserConfig.Username; UserReportsFolder = $UserReportsFolder }
-        }
-
-        if ($reportFunctionName -and (Get-Command $reportFunctionName -ErrorAction SilentlyContinue)) {
-            Write-Host "GUI: Calling $reportFunctionName in background job..."
-            $buttonRunReport.Enabled = $false; $reportForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-            
-            $job = Start-Job -ScriptBlock {
-                param($CmdName, $CmdParamsToJob, $JobScriptRoot)
-                . (Join-Path $JobScriptRoot "TMS_Config.ps1") 
-                . (Join-Path $JobScriptRoot "TMS_Helpers.ps1")
-                . (Join-Path $JobScriptRoot "TMS_Carrier_Central.ps1") 
-                . (Join-Path $JobScriptRoot "TMS_Carrier_SAIA.ps1")
-                . (Join-Path $JobScriptRoot "TMS_Carrier_RL.ps1")
-                . (Join-Path $JobScriptRoot "TMS_Carrier_Averitt.ps1")
-                
-                if (Get-Command $CmdName -ErrorAction SilentlyContinue) {
-                    & $CmdName @CmdParamsToJob
-                } else {
-                    Write-Error "Job Error: Command '$CmdName' not found in job scope."
-                    return $null 
-                }
-            } -ArgumentList $reportFunctionName, $params, $script:scriptRoot 
-            
-            Register-ObjectEvent -InputObject $job -EventName StateChanged -Action {
-                param($SenderJob)
-                if ($SenderJob.State -in ('Completed', 'Failed', 'Stopped')) {
-                    Write-Host "GUI: Background report job '$($SenderJob.Name)' finished with state: $($SenderJob.State)"
-                    $receivedReportPath = $null
-                    $jobErrors = $null
-                    try {
-                        if ($SenderJob.Error.Count -gt 0) {
-                            $jobErrors = ($SenderJob.Error | ForEach-Object {$_.ToString()}) -join [System.Environment]::NewLine
-                        }
-                        $receivedReportPath = Receive-Job -Job $SenderJob -Keep
-                    } catch {
-                        $jobErrors = "Error receiving job results: $($_.Exception.Message)"
-                    }
-                    
-                    $reportForm.Invoke([Action[object, string, string, System.Windows.Forms.Button, System.Windows.Forms.Form]]{
-                        param($jobState, $repPath, $errMsgs, $btnRun, $frmReport)
-
-                        $frmReport.Cursor = [System.Windows.Forms.Cursors]::Default
-                        $btnRun.Enabled = $true
-
-                        if ($jobState -eq 'Failed' -or ($null -eq $repPath -and $jobState -ne 'Completed' -and $errMsgs)) { 
-                             [System.Windows.Forms.MessageBox]::Show("Report generation failed or was cancelled. Check console for details. Errors: $($errMsgs)", "Report Error", "OK", "Error")
-                        } elseif ($repPath) {
-                            [System.Windows.Forms.MessageBox]::Show("Report generated successfully: $repPath", "Report Complete", "OK", "Information")
-                        } else { 
-                             [System.Windows.Forms.MessageBox]::Show("Report process completed, but no report file was generated or an issue occurred. Check console. Errors: $($errMsgs)", "Report Notice", "OK", "Warning")
-                        }
-                    }, @($SenderJob.State, $receivedReportPath, $jobErrors, $buttonRunReport, $reportForm))
-                    
-                    Remove-Job -Job $SenderJob -Force
-                    Unregister-Event -SourceIdentifier $SenderJob.InstanceId.ToString() 
-                }
-            } -SourceIdentifier $job.InstanceId.ToString() 
-
-            [System.Windows.Forms.MessageBox]::Show("Report generation started in the background. You will be notified upon completion.", "Report Running", "OK", "Information")
-
-        } else {
-            [System.Windows.Forms.MessageBox]::Show("Report function '$reportFunctionName' not found for carrier $CarrierName.", "Error", "OK", "Error")
-        }
-    })
-
-    $reportForm.ShowDialog()
+    if ($groupBoxReportCarrierSelect.Visible -and $script:selectedCustomerProfile) { 
+        $selectedCarrierForReports = "Central"
+        if ($radioReportSAIA.Checked) { $selectedCarrierForReports = "SAIA" } 
+        elseif ($radioReportRL.Checked) { $selectedCarrierForReports = "RL" }
+        try { 
+            Populate-ReportTariffListBoxes -SelectedCarrier $selectedCarrierForReports -ReportType $selectedReport -CustomerProfile $script:selectedCustomerProfile -ListBox1 $listBoxReportTariff1 -Label1 $labelReportTariff1 -ListBox2 $listBoxReportTariff2 -Label2 $labelReportTariff2 
+        } catch { 
+            $statusBar.Text = "Error refreshing report tariff list: $($_.Exception.Message)" 
+        } 
+    } 
 }
+$comboBoxReportType.Add_SelectedIndexChanged($comboBoxReportType_SelectedIndexChanged_ScriptBlock)
 
+$reportCarrierChangedHandler = { param($sender, $e); if ($sender.Checked -and $script:selectedCustomerProfile) { $selectedCarrierForReports = "Central"; if ($radioReportSAIA.Checked) { $selectedCarrierForReports = "SAIA" } elseif ($radioReportRL.Checked) { $selectedCarrierForReports = "RL" }; $selectedReport = $comboBoxReportType.SelectedItem.ToString(); try { Populate-ReportTariffListBoxes -SelectedCarrier $selectedCarrierForReports -ReportType $selectedReport -CustomerProfile $script:selectedCustomerProfile -ListBox1 $listBoxReportTariff1 -Label1 $labelReportTariff1 -ListBox2 $listBoxReportTariff2 -Label2 $labelReportTariff2 } catch { $statusBar.Text = "Error refreshing report tariff list: $($_.Exception.Message)" } } }
+$radioReportCentral.Add_CheckedChanged($reportCarrierChangedHandler); $radioReportSAIA.Add_CheckedChanged($reportCarrierChangedHandler); $radioReportRL.Add_CheckedChanged($reportCarrierChangedHandler)
+$buttonSelectCsv.Add_Click({ param($sender, $e); $csvPath = Select-CsvFile -DialogTitle "Select Report Data CSV" -InitialDirectory $script:shipmentDataFolderPath; if (-not [string]::IsNullOrWhiteSpace($csvPath)) { $textboxCsvPath.Text = $csvPath } })
+$buttonRunReport.Add_Click({ param($sender, $e); $textboxReportResults.Clear(); $statusBar.Text = "Starting report generation..."; $mainForm.Refresh(); if ($null -eq $script:selectedCustomerProfile) { [System.Windows.Forms.MessageBox]::Show("Please select a customer.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }; if ($comboBoxReportType.SelectedIndex -lt 0) { [System.Windows.Forms.MessageBox]::Show("Please select a report type.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }; if ([string]::IsNullOrWhiteSpace($textboxCsvPath.Text) -or -not (Test-Path $textboxCsvPath.Text -PathType Leaf)) { [System.Windows.Forms.MessageBox]::Show("Please select a valid CSV data file.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return }; $selectedReportType = $comboBoxReportType.SelectedItem.ToString(); $csvPath = $textboxCsvPath.Text; $customerProfile = $script:selectedCustomerProfile; $brokerProfile = $script:currentUserProfile; $reportsFolder = $script:currentUserReportsFolder; $reportFunction = $null; $reportParams = @{ CsvFilePath = $csvPath; UserReportsFolder = $reportsFolder };  if ($brokerProfile -and $brokerProfile.PSObject.Properties.Name -contains 'Username') {$reportParams.Username = $brokerProfile.Username} else {$reportParams.Username = "UnknownUser"} ; $selectedCarrier = $null; $key1Data = $null; $key2Data = $null; try { if ($groupBoxReportCarrierSelect.Visible) { if ($radioReportCentral.Checked) { $selectedCarrier = "Central" } elseif ($radioReportSAIA.Checked) { $selectedCarrier = "SAIA" } elseif ($radioReportRL.Checked) { $selectedCarrier = "RL" } else { throw "No carrier selected." }; if ($listBoxReportTariff1.SelectedIndex -lt 0) { throw "Please select Tariff 1." }; $tariff1Name = $listBoxReportTariff1.SelectedItem.ToString(); $allKeys = switch($selectedCarrier){"Central"{$script:allCentralKeys}"SAIA"{$script:allSAIAKeys}"RL"{$script:allRLKeys}}; if (-not $allKeys.ContainsKey($tariff1Name)) { throw "Selected Tariff 1 ('$tariff1Name') data not found." }; $key1Data = $allKeys[$tariff1Name]; if ($listBoxReportTariff2.Visible) { if ($listBoxReportTariff2.SelectedIndex -lt 0) { throw "Please select Tariff 2." }; $tariff2Name = $listBoxReportTariff2.SelectedItem.ToString(); if ($tariff1Name -eq $tariff2Name) { throw "Tariff 1 and Tariff 2 cannot be the same."}; if (-not $allKeys.ContainsKey($tariff2Name)) { throw "Selected Tariff 2 ('$tariff2Name') data not found." }; $key2Data = $allKeys[$tariff2Name] } }; switch ($selectedReportType) { "Carrier Comparison" { $reportFunction = "Run-{0}ComparisonReportGUI" -f $selectedCarrier; $reportParams.Key1Data = $key1Data; $reportParams.Key2Data = $key2Data } "Avg Required Margin" { $reportFunction = "Run-{0}MarginReportGUI" -f $selectedCarrier; $reportParams.BaseKeyData = $key1Data; $reportParams.ComparisonKeyData = $key2Data } "Required Margin for ASP" { $reportFunction = "Calculate-{0}MarginForASPReportGUI" -f $selectedCarrier; if (-not $groupBoxReportAspInput.Visible) { Write-Warning "ASP Input groupbox is not visible for 'Required Margin for ASP' report. This might be a UI logic error."; throw "ASP Input not visible for 'Required Margin for ASP' report type?" }; $aspInput = $textBoxDesiredAsp.Text; if (-not ($aspInput -match '^\d+(\.\d+)?$' -and ([decimal]$aspInput -gt 0))) { throw "Invalid Desired ASP value." }; $reportParams.CostAccountInfo = $key1Data; $reportParams.DesiredASP = [decimal]$aspInput } "Cross-Carrier ASP Analysis" { $reportFunction = "Run-CrossCarrierASPAnalysisGUI"; if (-not $groupBoxReportAspInput.Visible) { Write-Warning "ASP Input groupbox is not visible for 'Cross-Carrier ASP Analysis' report. This might be a UI logic error."; throw "ASP Input not visible for 'Cross-Carrier ASP Analysis' report type?" }; $aspInput = $textBoxDesiredAsp.Text; if (-not ($aspInput -match '^\d+(\.\d+)?$' -and ([decimal]$aspInput -gt 0))) { throw "Invalid Desired ASP value." }; $reportParams.Remove('Username'); $reportParams.BrokerProfile = $brokerProfile; $reportParams.SelectedCustomerProfile = $customerProfile; $reportParams.AllCentralKeys = $script:allCentralKeys; $reportParams.AllSAIAKeys = $script:allSAIAKeys; $reportParams.AllRLKeys = $script:allRLKeys; $reportParams.DesiredASPValue = [decimal]$aspInput; $reportParams.ApplyMargins = $checkBoxApplyMargins.Checked; $reportParams.ASPFromHistory = $false } "Margins by History" { $reportFunction = "Run-MarginsByHistoryAnalysisGUI"; $reportParams = @{ BrokerProfile = $brokerProfile; SelectedCustomerProfile = $customerProfile; ReportsBaseFolder = $reportsFolder; UserReportsFolder = $reportsFolder; AllCentralKeys = $script:allCentralKeys; AllSAIAKeys = $script:allSAIAKeys; AllRLKeys = $script:allRLKeys; CsvFilePath = $csvPath; ApplyMargins = $checkBoxApplyMargins.Checked } } default { throw "Selected report type '$selectedReportType' is not implemented." } }; $statusBar.Text = "Running Report: $selectedReportType..."; $mainForm.Refresh(); Write-Host "DEBUG: Calling $reportFunction with params:"; $reportParams | Format-List | Out-String | Write-Host; $reportOutputPath = & $reportFunction @reportParams; if ($reportOutputPath -and (Test-Path $reportOutputPath)) { $textboxReportResults.Text = "Report generated successfully!`nPath: $reportOutputPath"; $statusBar.Text = "Report Complete."; $result = [System.Windows.Forms.MessageBox]::Show("Report generated successfully.`n`nOpen the report file now?`n$reportOutputPath", "Report Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); if ($result -eq [System.Windows.Forms.DialogResult]::Yes) { try { Open-FileExplorer -Path $reportOutputPath } catch { [System.Windows.Forms.MessageBox]::Show("Failed to open report file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) } } } else { $textboxReportResults.Text = "Report generation failed. Check console output for details."; $statusBar.Text = "Report Failed."; [System.Windows.Forms.MessageBox]::Show("Report generation failed. Check console output.", "Report Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) } } catch { $errorMsg = "Error running report '$selectedReportType':`n$($_.Exception.Message)"; Write-Error $errorMsg; $textboxReportResults.Text = $errorMsg; $statusBar.Text = "Report Error."; [System.Windows.Forms.MessageBox]::Show($errorMsg, "Report Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) } })
 
-# --- Main Application Entry Point ---
-Write-Host "TMS GUI is starting..." -ForegroundColor Green
-
-if (Show-LoginWindow) { 
-    Show-MainWindow
-} else {
-    Write-Warning "Login failed or cancelled. Exiting GUI."
-}
-
-Write-Host "TMS GUI application finished." -ForegroundColor Green
-[System.Windows.Forms.Application]::Exit() 
+$mainForm.Add_Shown({ if ($loginPanel.Visible) { $textboxUsername.Focus() } })
+[void]$mainForm.ShowDialog()
+Write-Host "GUI Closed."
