@@ -108,7 +108,8 @@ Function Populate-TariffListBox {
                 } else { $currentMargin = "Invalid!" } # Value is null or not convertible
             }
             # Format: Tariff Name (padded) Margin% (right-aligned)
-            $displayString = "{0,-35} {1,10}" -f $keyName, $currentMargin
+            # Increased padding for potentially longer names
+            $displayString = "{0,-40} {1,10}" -f $keyName, $currentMargin
             $ListBoxControl.Items.Add($displayString) | Out-Null
         }
     } else {

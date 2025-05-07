@@ -1,15 +1,17 @@
 # TMS_Carrier_Averitt.ps1
 # Description: Contains functions specific to Averitt Express operations,
 #              refactored to accept parameters for GUI use.
-#              Requires TMS_Helpers.ps1 and TMS_Config.ps1 to be loaded first (by main entry script).
+#              Requires TMS_Helpers_Averitt.ps1, TMS_Helpers_General.ps1, and TMS_Config.ps1
+#              to be loaded first (by main entry script).
 #              This file should be dot-sourced by the main entry script (TMS_GUI.ps1).
 
-# Assumes helper functions like Invoke-AverittApi, Write-LoadingBar,
-# Load-And-Normalize-AverittData, Get-ReportPath, Select-CsvFile,
-# Select-SingleKeyEntry, Get-PermittedKeys are available from TMS_Helpers.ps1 or main script.
-# Assumes config variables like $script:averittApiUri are available from TMS_Config.ps1 (via main script).
+# Assumes helper functions like Invoke-AverittApi, Load-And-Normalize-AverittData,
+# Get-ReportPath, Get-MinimumRate, Calculate-QuotePrice, Write-QuoteToHistory,
+# Write-LoadingBar, Open-FileExplorer are available.
+# Assumes config variables like $script:averittApiUri are available.
 
 function Run-AverittComparisonReportGUI {
+    # GUI VERSION: Generates a report comparing costs between two selected Averitt keys/tariffs.
     param(
         [Parameter(Mandatory=$true)][hashtable]$Key1Data,
         [Parameter(Mandatory=$true)][hashtable]$Key2Data,
@@ -23,6 +25,7 @@ function Run-AverittComparisonReportGUI {
     Write-Host "Comparing Account: '$key1DisplayName' vs Account: '$key2DisplayName'"
 
     # --- Data Loading (Averitt specific) ---
+    if (-not (Get-Command Load-And-Normalize-AverittData -ErrorAction SilentlyContinue)) { Write-Error "Function Load-And-Normalize-AverittData not found."; return $null }
     $shipments = Load-And-Normalize-AverittData -CsvPath $CsvFilePath # Expects detailed CSV
     if ($shipments -eq $null -or $shipments.Count -eq 0) {
         Write-Warning "No processable Averitt shipment data found in '$CsvFilePath'."
@@ -34,6 +37,7 @@ function Run-AverittComparisonReportGUI {
     $resultsData = [System.Collections.Generic.List[object]]::new()
     $key1NameSafe = $key1DisplayName -replace '[^a-zA-Z0-9_-]', ''
     $key2NameSafe = $key2DisplayName -replace '[^a-zA-Z0-9_-]', ''
+    if (-not (Get-Command Get-ReportPath -ErrorAction SilentlyContinue)) { Write-Error "Function Get-ReportPath not found."; return $null }
     $reportFilePath = Get-ReportPath -BaseDir $UserReportsFolder -Username $Username -Carrier 'Averitt' -ReportType 'Comparison' -FilePrefix ($key1NameSafe + "_vs_" + $key2NameSafe)
     if (-not $reportFilePath) { return $null }
 
@@ -49,6 +53,8 @@ function Run-AverittComparisonReportGUI {
     $totalShipmentsToProcess = $shipments.Count
     Write-Host "Processing $totalShipmentsToProcess shipments for Averitt Comparison..."
     $useLoadingBar = Get-Command Write-LoadingBar -ErrorAction SilentlyContinue
+    if (-not (Get-Command Invoke-AverittApi -ErrorAction SilentlyContinue)) { Write-Error "Function Invoke-AverittApi not found."; return $null }
+
     for ($i = 0; $i -lt $totalShipmentsToProcess; $i++) {
         $shipmentDataRow = $shipments[$i]; $shipmentNumberForDisplay = $i + 1
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumberForDisplay * 100 / $totalShipmentsToProcess)) -Message "Processing Shipment $shipmentNumberForDisplay (Averitt Comp)" }
@@ -64,29 +70,20 @@ function Run-AverittComparisonReportGUI {
         }
 
         $difference = $cost1 - $cost2; $totalDifference += $difference; $processedShipmentCount++
-        
+
+        # Calculate total weight for reporting (sum from commodities)
         $currentWeight = 0.0
-        try { # Corrected try-catch block for weight calculation
-            for ($commIdx = 1; $commIdx -le 5; $commIdx++) {
-                $weightKey = "Commodity${commIdx}_Weight"
-                if ($shipmentDataRow.PSObject.Properties.Match($weightKey) -and (-not [string]::IsNullOrWhiteSpace($shipmentDataRow.$weightKey))) {
-                    $currentWeight += [decimal]$shipmentDataRow.$weightKey
-                }
+        try {
+            foreach($comm in $shipmentDataRow.Commodities){
+                 if($comm.weight -as [decimal]){ $currentWeight += [decimal]$comm.weight }
             }
-            # If all commodity weights are zero/missing, try a total weight column if it exists from the CSV
-            if ($currentWeight -eq 0.0 -and $shipmentDataRow.PSObject.Properties.Match('Total_Weight_From_CSV')) { # Assuming a column named this might exist
-                 $currentWeight = [decimal]$shipmentDataRow.Total_Weight_From_CSV
-            }
-        } catch { # Catch for the weight calculation try block
-            Write-Warning "Could not accurately sum weights for report on shipment $shipmentNumberForDisplay (Origin: $($shipmentDataRow.OriginPostalCode)). Error: $($_.Exception.Message)"
-            # $currentWeight remains 0.0 or its last valid sum
-        }
+        } catch { Write-Warning "Could not sum weights for report on shipment $shipmentNumberForDisplay." }
 
 
         $resultsData.Add([PSCustomObject]@{
             OriginZip = $shipmentDataRow.OriginPostalCode
             DestZip = $shipmentDataRow.DestinationPostalCode
-            Weight = if($currentWeight -gt 0) {$currentWeight} else {'N/A'} 
+            Weight = if($currentWeight -gt 0) {$currentWeight} else {'N/A'}
             Cost1 = $cost1
             Cost2 = $cost2
             Difference = $difference
@@ -136,6 +133,8 @@ function Run-AverittComparisonReportGUI {
 }
 
 function Run-AverittMarginReportGUI {
+    # GUI VERSION: Calculates the average margin required for a 'Comparison' key cost
+    # to match the average target sell price derived from a 'Base' key cost and its margin.
     param(
         [Parameter(Mandatory=$true)][hashtable]$BaseKeyData,
         [Parameter(Mandatory=$true)][hashtable]$ComparisonKeyData,
@@ -148,6 +147,7 @@ function Run-AverittMarginReportGUI {
     $compKeyName = if ($ComparisonKeyData.ContainsKey('Name')) { $ComparisonKeyData.Name } else { $ComparisonKeyData.TariffFileName | Split-Path -Leaf }
     Write-Host "Base Cost Account: '$baseKeyName', Comparison Cost Account: '$compKeyName'"
 
+    # --- Get Margin from Base Key File ---
     $customerCurrentMarginPercent = $null
     if ($BaseKeyData.ContainsKey('MarginPercent')) {
         try { $marginValue = [double]$BaseKeyData.MarginPercent; if ($marginValue -ge 0 -and $marginValue -lt 100) { $customerCurrentMarginPercent = $marginValue } else { Write-Warning "Margin '$($BaseKeyData.MarginPercent)' in '$baseKeyName' invalid." } }
@@ -162,11 +162,15 @@ function Run-AverittMarginReportGUI {
     $customerCurrentMarginDecimal = [decimal]$customerCurrentMarginPercent / 100.0
     Write-Host "Using Margin from Base Account '$baseKeyName': $customerCurrentMarginPercent%" -ForegroundColor Cyan
 
+    # --- Data Loading ---
+    if (-not (Get-Command Load-And-Normalize-AverittData -ErrorAction SilentlyContinue)) { Write-Error "Function Load-And-Normalize-AverittData not found."; return $null }
     $shipments = Load-And-Normalize-AverittData -CsvPath $CsvFilePath
     if ($shipments -eq $null -or $shipments.Count -eq 0) { Write-Warning "No processable Averitt shipment data found in '$CsvFilePath'."; return $null }
 
+    # --- Report Preparation ---
     $reportContent = [System.Collections.Generic.List[string]]::new(); $resultsData = [System.Collections.Generic.List[object]]::new()
     $safeBaseKeyName = $baseKeyName -replace '[^a-zA-Z0-9_-]', ''; $safeCompKeyName = $compKeyName -replace '[^a-zA-Z0-9_-]', ''
+    if (-not (Get-Command Get-ReportPath -ErrorAction SilentlyContinue)) { Write-Error "Function Get-ReportPath not found."; return $null }
     $reportFilePath = Get-ReportPath -BaseDir $UserReportsFolder -Username $Username -Carrier 'Averitt' -ReportType 'AvgMarginCalc' -FilePrefix ($safeBaseKeyName + "_vs_" + $safeCompKeyName)
     if (-not $reportFilePath) { return $null }
 
@@ -178,8 +182,11 @@ function Run-AverittMarginReportGUI {
     $headerLine = ("Origin Zip".PadRight($col1Width)) + ("Dest Zip".PadRight($col2Width)) + ("Weight".PadRight($col3Width)) + ("Base Cost".PadRight($col4Width)) + ("Comp Cost".PadRight($col5Width)) + ("Target Sell".PadRight($col6Width)) + ("Base Profit".PadRight($col7Width)) + ("Comp Profit".PadRight($col8Width))
     $reportContent.Add($headerLine); $reportContent.Add("--------------------------------------------------------------------------------------------------------------------")
 
+    # --- Process Shipments ---
     $totalShipmentsToProcess = $shipments.Count; Write-Host "Processing $totalShipmentsToProcess shipments for Averitt Avg Margin Calc..."
     $useLoadingBar = Get-Command Write-LoadingBar -ErrorAction SilentlyContinue
+    if (-not (Get-Command Invoke-AverittApi -ErrorAction SilentlyContinue)) { Write-Error "Function Invoke-AverittApi not found."; return $null }
+
     for ($i = 0; $i -lt $totalShipmentsToProcess; $i++) {
         $shipmentDataRow = $shipments[$i]; $shipmentNumberForDisplay = $i + 1
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumberForDisplay * 100 / $totalShipmentsToProcess)) -Message "Processing Shipment $shipmentNumberForDisplay (Averitt Avg Margin)" }
@@ -201,22 +208,10 @@ function Run-AverittMarginReportGUI {
         } catch { Write-Warning "Skipping Averitt shipment $shipmentNumberForDisplay (calculation error: $($_.Exception.Message))"; $skippedShipmentCount++; continue }
 
         $processedShipmentCount++; $totalTargetSellPrice += $targetSellPrice; $totalCompCost += $compCost
-        
-        $currentWeight = 0.0
-        try { # Corrected try-catch block for weight calculation
-            for ($commIdx = 1; $commIdx -le 5; $commIdx++) { 
-                $weightKey = "Commodity${commIdx}_Weight"
-                if ($shipmentDataRow.PSObject.Properties.Match($weightKey) -and -not [string]::IsNullOrWhiteSpace($shipmentDataRow.$weightKey)) { 
-                    $currentWeight += [decimal]$shipmentDataRow.$weightKey
-                }
-            }
-            if ($currentWeight -eq 0.0 -and $shipmentDataRow.PSObject.Properties.Match('Total_Weight_From_CSV')) {
-                 $currentWeight = [decimal]$shipmentDataRow.Total_Weight_From_CSV
-            }
-        } catch { # Catch for the weight calculation try block
-             Write-Warning "Could not accurately sum weights for report on shipment $shipmentNumberForDisplay (Origin: $($shipmentDataRow.OriginPostalCode)). Error: $($_.Exception.Message)"
-        }
 
+        # Calculate total weight for reporting
+        $currentWeight = 0.0
+        try { foreach($comm in $shipmentDataRow.Commodities){ if($comm.weight -as [decimal]){ $currentWeight += [decimal]$comm.weight } } } catch {}
 
         $resultsData.Add([PSCustomObject]@{
             OriginZip = $shipmentDataRow.OriginPostalCode; DestZip = $shipmentDataRow.DestinationPostalCode; Weight = if($currentWeight -gt 0) {$currentWeight} else {'N/A'}
@@ -225,6 +220,7 @@ function Run-AverittMarginReportGUI {
     }
      if ($useLoadingBar) { Write-Progress -Activity "Processing Averitt Avg Margin Shipments" -Completed }
 
+    # --- Format Results ---
     foreach ($result in $resultsData) {
         try {
              $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }
@@ -240,6 +236,7 @@ function Run-AverittMarginReportGUI {
         } catch { Write-Warning "Skipping result row (Origin: $($result.OriginZip)) due to formatting error: $($_.Exception.Message)"; $skippedShipmentCount++ }
     }
 
+    # --- Report Summary ---
     $reportContent.Add("--------------------------------------------------------------------------------------------------------------------"); $reportContent.Add("Summary:"); $reportContent.Add("Processed Shipments (API & Calc OK): $processedShipmentCount"); $reportContent.Add("Skipped Shipments (API/Calc/Formatting Errors): $skippedShipmentCount")
     if ($processedShipmentCount -gt 0) {
         $avgTargetSellPrice = $totalTargetSellPrice / $processedShipmentCount; $avgCompCost = $totalCompCost / $processedShipmentCount
@@ -251,11 +248,13 @@ function Run-AverittMarginReportGUI {
     } else { $reportContent.Add("No shipments processed successfully, cannot calculate average margin.") }
     $reportContent.Add("--------------------------------------------------------------------------------------------------------------------"); $reportContent.Add("End of Report")
 
+    # --- Save Report ---
     try { $reportContent | Out-File -FilePath $reportFilePath -Encoding UTF8 -ErrorAction Stop; Write-Host "`nAveritt Average Margin Calculation Report saved successfully to: $reportFilePath" -ForegroundColor Green; return $reportFilePath }
     catch { Write-Error "Failed to save Averitt report file '$reportFilePath': $($_.Exception.Message)"; return $null }
 }
 
 function Calculate-AverittMarginForASPReportGUI {
+    # GUI VERSION: Calculates the required margin for a specific key/tariff to meet a desired ASP.
     param(
         [Parameter(Mandatory=$true)][hashtable]$CostAccountInfo,
         [Parameter(Mandatory=$true)][decimal]$DesiredASP,
@@ -268,11 +267,15 @@ function Calculate-AverittMarginForASPReportGUI {
     $costAccountName = if ($CostAccountInfo.ContainsKey('Name')) { $CostAccountInfo.Name } else { $CostAccountInfo.TariffFileName | Split-Path -Leaf }
     Write-Host "Cost Basis Account: '$costAccountName', Desired ASP: $($DesiredASP.ToString('C2'))"
 
+    # --- Data Loading ---
+    if (-not (Get-Command Load-And-Normalize-AverittData -ErrorAction SilentlyContinue)) { Write-Error "Function Load-And-Normalize-AverittData not found."; return $null }
     $shipments = Load-And-Normalize-AverittData -CsvPath $CsvFilePath
     if ($shipments -eq $null -or $shipments.Count -eq 0) { Write-Warning "No processable Averitt shipment data found in '$CsvFilePath'."; return $null }
 
+    # --- Report Preparation ---
     $reportContent = [System.Collections.Generic.List[string]]::new(); $resultsData = [System.Collections.Generic.List[object]]::new()
     $safeCostKeyName = $costAccountName -replace '[^a-zA-Z0-9_-]', ''
+    if (-not (Get-Command Get-ReportPath -ErrorAction SilentlyContinue)) { Write-Error "Function Get-ReportPath not found."; return $null }
     $reportFilePath = Get-ReportPath -BaseDir $UserReportsFolder -Username $Username -Carrier 'Averitt' -ReportType 'MarginForASP' -FilePrefix $safeCostKeyName
     if (-not $reportFilePath) { return $null }
 
@@ -280,12 +283,15 @@ function Calculate-AverittMarginForASPReportGUI {
     $reportContent.Add("Averitt Required Margin for Desired ASP Report"); $reportContent.Add("User: $Username"); $reportContent.Add("Date: $(Get-Date)"); $reportContent.Add("Data File: $CsvFilePath")
     $reportContent.Add("Cost Basis Account: '$costAccountName'"); $reportContent.Add("Desired Average Sell Price (ASP): $($DesiredASP.ToString("C2"))")
     $reportContent.Add("--------------------------------------------------------------------------")
-    $col1ASP = 12; $col2ASP = 12; $col3ASP = 15; $col4ASP = 15
+    $col1ASP = 12; $col2ASP = 12; $col3ASP = 15; $col4ASP = 15 # Adjusted width for weight
     $headerLineASP = ("Origin Zip".PadRight($col1ASP)) + ("Dest Zip".PadRight($col2ASP)) + ("Weight".PadRight($col3ASP)) + ("Retrieved Cost".PadRight($col4ASP))
     $reportContent.Add($headerLineASP); $reportContent.Add("--------------------------------------------------------------------------")
 
+    # --- Process Shipments ---
     $totalShipmentsToProcess = $shipments.Count; Write-Host "Processing $totalShipmentsToProcess shipments for Averitt Margin for ASP..."
     $useLoadingBar = Get-Command Write-LoadingBar -ErrorAction SilentlyContinue
+    if (-not (Get-Command Invoke-AverittApi -ErrorAction SilentlyContinue)) { Write-Error "Function Invoke-AverittApi not found."; return $null }
+
     for ($i = 0; $i -lt $totalShipmentsToProcess; $i++) {
         $shipmentDataRow = $shipments[$i]; $shipmentNumberForDisplay = $i + 1
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumberForDisplay * 100 / $totalShipmentsToProcess)) -Message "Processing Shipment $shipmentNumberForDisplay (Averitt Margin/ASP)" }
@@ -297,21 +303,10 @@ function Calculate-AverittMarginForASPReportGUI {
         if ($costValue -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping Averitt shipment $shipmentNumberForDisplay (API error)."; continue }
 
         $processedShipmentCount++; $totalCostValue += $costValue
-        
+
+        # Calculate total weight for reporting
         $currentWeight = 0.0
-        try { # Corrected try-catch block for weight calculation
-            for ($commIdx = 1; $commIdx -le 5; $commIdx++) { 
-                $weightKey = "Commodity${commIdx}_Weight"
-                if ($shipmentDataRow.PSObject.Properties.Match($weightKey) -and -not [string]::IsNullOrWhiteSpace($shipmentDataRow.$weightKey)) { 
-                    $currentWeight += [decimal]$shipmentDataRow.$weightKey
-                }
-            }
-            if ($currentWeight -eq 0.0 -and $shipmentDataRow.PSObject.Properties.Match('Total_Weight_From_CSV')) {
-                 $currentWeight = [decimal]$shipmentDataRow.Total_Weight_From_CSV
-            }
-        } catch { # Catch for the weight calculation try block
-             Write-Warning "Could not accurately sum weights for report on shipment $shipmentNumberForDisplay (Origin: $($shipmentDataRow.OriginPostalCode)). Error: $($_.Exception.Message)"
-        }
+        try { foreach($comm in $shipmentDataRow.Commodities){ if($comm.weight -as [decimal]){ $currentWeight += [decimal]$comm.weight } } } catch {}
 
         $resultsData.Add([PSCustomObject]@{
             OriginZip = $shipmentDataRow.OriginPostalCode; DestZip = $shipmentDataRow.DestinationPostalCode; Weight = if($currentWeight -gt 0) {$currentWeight} else {'N/A'}; Cost = $costValue
@@ -319,6 +314,7 @@ function Calculate-AverittMarginForASPReportGUI {
     }
     if ($useLoadingBar) { Write-Progress -Activity "Processing Averitt Margin/ASP Shipments" -Completed }
 
+    # --- Format Results ---
     foreach ($result in $resultsData) {
         try {
              $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }
@@ -330,6 +326,7 @@ function Calculate-AverittMarginForASPReportGUI {
         } catch { Write-Warning "Skipping result row (Origin: $($result.OriginZip)) due to formatting error: $($_.Exception.Message)"; $skippedShipmentCount++ }
     }
 
+    # --- Report Summary ---
     $reportContent.Add("--------------------------------------------------------------------------"); $reportContent.Add("Summary:"); $reportContent.Add("Processed Shipments (API OK): $processedShipmentCount"); $reportContent.Add("Skipped Shipments (API Errors/Formatting): $skippedShipmentCount")
     $avgCost = 0.0; $requiredAvgMarginPercent = $null; $avgProfitPerShipment = 0.0
     if ($processedShipmentCount -gt 0) {
@@ -342,23 +339,29 @@ function Calculate-AverittMarginForASPReportGUI {
     } else { $reportContent.Add("No shipments processed successfully, cannot calculate averages.") }
     $reportContent.Add("--------------------------------------------------------------------------"); $reportContent.Add("End of Report")
 
+    # --- Save Report ---
     try { $reportContent | Out-File -FilePath $reportFilePath -Encoding UTF8 -ErrorAction Stop; Write-Host "`nAveritt Required Margin for ASP Report saved successfully to: $reportFilePath" -ForegroundColor Green; return $reportFilePath }
     catch { Write-Error "Failed to save Averitt report file '$reportFilePath': $($_.Exception.Message)"; return $null }
 }
 
+
 function List-AverittPermittedKeysGUI {
+    # GUI Helper: Lists Averitt keys permitted for a given customer profile.
     param(
         [Parameter(Mandatory=$true)][hashtable]$CustomerProfile,
         [Parameter(Mandatory=$true)][hashtable]$AllAverittKeys
      )
      Write-Host "`n--- Averitt Keys Permitted for Customer: $($CustomerProfile.CustomerName) ---" -ForegroundColor Cyan
      $allowedKeyNames = @()
+     # Ensure AllowedAverittKeys exists in the customer profile
      if ($CustomerProfile.ContainsKey('AllowedAverittKeys') -and $CustomerProfile['AllowedAverittKeys'] -is [array]) {
          $allowedKeyNames = $CustomerProfile['AllowedAverittKeys']
      }
 
      if ($allowedKeyNames.Count -eq 0) { Write-Host "No Averitt keys/accounts permitted for this customer."; return }
 
+     # Get-PermittedKeys is a helper from TMS_Helpers_General.ps1
+     if (-not (Get-Command Get-PermittedKeys -ErrorAction SilentlyContinue)) { Write-Error "Function Get-PermittedKeys not found."; return }
      $permittedKeys = Get-PermittedKeys -AllKeys $AllAverittKeys -AllowedKeyNames $allowedKeyNames
 
      if ($permittedKeys.Count -eq 0) { Write-Warning "Could not retrieve details for any permitted Averitt keys."; return }
@@ -370,6 +373,7 @@ function List-AverittPermittedKeysGUI {
          if ($keyDetails -is [hashtable]) {
               $keyDetails.GetEnumerator() | Where-Object { $_.Name -ne 'Name' -and $_.Name -ne 'TariffFileName' } | Sort-Object Name | ForEach-Object {
                    $displayValue = $_.Value
+                   # Mask API Key for display
                    if ($_.Name -eq 'APIKey' -and $displayValue -is [string] -and $displayValue.Length -gt 8) {
                        $displayValue = $displayValue.Substring(0, 4) + '...' + $displayValue.Substring($displayValue.Length - 4)
                    }
@@ -381,3 +385,15 @@ function List-AverittPermittedKeysGUI {
 }
 
 Write-Verbose "TMS Averitt Carrier Functions loaded."
+```
+
+**Summary of Content:**
+
+* **`Run-AverittComparisonReportGUI`**: Compares costs between two Averitt accounts using data from a detailed CSV.
+* **`Run-AverittMarginReportGUI`**: Calculates the required margin for one Averitt account to match the selling price derived from another account's cost + margin.
+* **`Calculate-AverittMarginForASPReportGUI`**: Calculates the required margin for a single Averitt account to achieve a specific Average Selling Price (ASP).
+* **`List-AverittPermittedKeysGUI`**: Lists the details of Averitt accounts permitted for the selected customer (useful for debugging or console use).
+
+These functions rely heavily on `Load-And-Normalize-AverittData` and `Invoke-AverittApi` from the `TMS_Helpers_Averitt.ps1` file you created previously. Ensure those helper functions correctly map your CSV data to the format expected by the Averitt API.
+
+Let me know when you're ready for the final file, the fully integrated `TMS_GUI.ps
