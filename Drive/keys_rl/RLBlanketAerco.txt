@@ -1,0 +1,3 @@
+﻿Name=RLBlanketAerco
+APIKey=YtMiZGYDUzZiJkNzAtNmI5NS00MjBjLWIzNTMTlhZ1ODMTJ2C
+MarginPercent=67.0

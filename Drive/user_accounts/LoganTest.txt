@@ -1,0 +1,2 @@
+Username=LoganTest
+PasswordHash=2c3d17459b590b04de07a09336959285f987e927b72b7865e7d2a5a380b00587

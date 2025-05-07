@@ -1,0 +1,4 @@
+﻿Name=Central Aerco CSP Tariff
+accessCode=51226c32-1a00-46ea-9996-da5d0ce59
+customerNumber=76140602602
+MarginPercent=83

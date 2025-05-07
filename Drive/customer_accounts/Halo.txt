@@ -1,0 +1,5 @@
+PasswordHash=8c893d25ccedf83dfe137a221604059fc225baa522a1391a71bb169a07532e5f
+AllowedCentralKeys=Central Halo CSP Tariff,Central Halo Blanket Tariff
+AllowedSAIAKeys=SAIA Halo Blanket Tariff,SAIA Halo Dummy Tariff
+AllowedRLKeys=RLBlanketHalo,RLDummyHalo
+AllowedAverittKeys=AverittMainTariffHalo

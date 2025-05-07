@@ -1,0 +1,5 @@
+﻿AccountName=SAIA Aerco Blanket Tariff
+UserID=pentonixfreight9
+Password=fortworth7873
+RQKey=fd2d215b8f804ea78e1dcddc764d2812
+MarginPercent=63

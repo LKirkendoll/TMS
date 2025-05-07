@@ -1,0 +1,4 @@
+Name=AverittMainTariffHalo
+APIKey=a6ace4177d55403cb78a42ab2c5762b7
+MarginPercent=15.0 # Adjust as needed; can be changed later via TMS Settings
+# Add any other static parameters needed for all Averitt calls under this key, if any.
