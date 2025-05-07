@@ -50,10 +50,10 @@ function Authenticate-User {
 
     $userData = @{}
     try {
-        Get-Content -Path $userFilePath | ForEach-Object {
-            $line = $_.Trim()
-            if (-not ([string]::IsNullOrWhiteSpace($line)) -and $line -match '^(.+?)\s*=\s*(.*)$') {
-                $userData[$Matches[1].Trim()] = $Matches[2].Trim()
+        # Read lines, skipping blank/comment lines
+        Get-Content -Path $userFilePath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') } | ForEach-Object {
+            if ($_ -match '^\s*([^=]+?)\s*=\s*(.*?)\s*$') { # Match Key=Value, trimming whitespace
+                $userData[$Matches[1]] = $Matches[2]
             }
         }
     } catch {
@@ -66,20 +66,18 @@ function Authenticate-User {
         return $null
     }
 
-    if ($userData.Username -ne $Username) {
-        Write-Warning "Username mismatch in file '$userFilePath'." 
-        return $null
-    }
+    # Optional: Check if Username in file matches requested Username
+    # if ($userData.Username -ne $Username) {
+    #     Write-Warning "Username mismatch in file '$userFilePath'."
+    #     return $null
+    # }
 
     if (Test-PasswordHash -PasswordPlainText $PasswordPlainText -StoredHash $userData.PasswordHash) {
         Write-Host "Authentication successful for user '$Username'." -ForegroundColor Green
-        # Return a hashtable for consistency with other data structures if needed,
-        # or PSCustomObject if preferred for user profiles.
-        # For report functions expecting [hashtable], this should also be a hashtable.
-        return [hashtable]@{ # <<< MODIFICATION: Ensure BrokerProfile is also a hashtable
+        # Return a hashtable for consistency
+        return [hashtable]@{
             Username = $userData.Username
             # Add other user properties from the file if needed, e.g., Role, FullName
-            # FullName = $userData.FullName 
         }
     } else {
         Write-Warning "Authentication failed for user '$Username'."
@@ -99,55 +97,94 @@ function Load-AllCustomerProfiles {
 
     if (-not (Test-Path -Path $UserAccountsFolderPath -PathType Container)) {
         Write-Warning "Customer accounts folder '$UserAccountsFolderPath' not found."
-        return $allProfiles 
+        return $allProfiles
     }
 
     $profileFiles = Get-ChildItem -Path $UserAccountsFolderPath -Filter "*.txt" -File -ErrorAction SilentlyContinue
     if ($profileFiles) {
         foreach ($file in $profileFiles) {
-            $customerNameFromFile = $file.BaseName 
-            # <<< MODIFICATION: Initialize as Hashtable >>>
-            $profileData = [hashtable]@{ "CustomerFileName" = $customerNameFromFile } 
+            $customerNameFromFile = $file.BaseName
+            Write-Verbose "Processing customer file '$($file.Name)'..." #-ForegroundColor Magenta
+
+            # <<< MODIFICATION: Pre-initialize $profileData with expected Allowed*Keys as empty arrays >>>
+            $profileData = [hashtable]@{
+                "CustomerFileName"   = $customerNameFromFile
+                "CustomerName"       = $customerNameFromFile # Default CustomerName to filename; can be overridden by file content
+                "AllowedCentralKeys" = @()
+                "AllowedSAIAKeys"    = @()
+                "AllowedRLKeys"      = @()
+                "AllowedAverittKeys" = @()
+                # Add any other fields that are consistently present or should default
+            }
+            # Write-Host "DEBUG Load-AllCustomerProfiles: Initialized profileData for '$customerNameFromFile'. Keys: $($profileData.Keys -join ', ')" #-ForegroundColor Magenta
 
             try {
+                # --- Line-by-line parsing ---
                 Get-Content -Path $file.FullName -ErrorAction Stop | ForEach-Object {
                     $line = $_.Trim()
-                    if (-not ([string]::IsNullOrWhiteSpace($line)) -and $line -match '^(.+?)\s*=\s*(.*)$') {
-                        $key = $Matches[1].Trim()
-                        $value = $Matches[2].Trim()
+                    # Match Key=Value, trimming whitespace around key, value, and equals
+                    if (-not ([string]::IsNullOrWhiteSpace($line)) -and $line -match '^\s*([^=]+?)\s*=\s*(.*?)\s*$') {
+                        $key = $Matches[1]
+                        $value = $Matches[2]
 
-                        if ($key -like "Allowed*Keys" -and $value -match ',') {
-                            $profileData[$key] = ($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        if ($key -eq 'CustomerName') { # Explicitly handle CustomerName if in file
+                            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                                $profileData.CustomerName = $value # Override filename default
+                                Write-Verbose "  Parsed CustomerName = '$value'"
+                            }
+                        } elseif ($key -like "Allowed*Keys") {
+                            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                                # Split by comma, trim, and filter out any empty strings resulting from split (e.g. "val1,,val2")
+                                $parsedArray = ($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                                $profileData[$key] = $parsedArray
+                                Write-Verbose "  Parsed $key = $($parsedArray -join '; ')"
+                            } else {
+                                # If line is "AllowedSomeKeys=", value is empty, so assign an empty array.
+                                # This correctly overwrites the pre-initialized empty array with another empty array.
+                                $profileData[$key] = @()
+                                Write-Verbose "  Parsed $key = (empty value -> @())"
+                            }
                         } else {
+                            # For any other keys found in the file (e.g., PasswordHash)
                             $profileData[$key] = $value
+                            Write-Verbose "  Parsed $key = '$value'"
+                        }
+                    } else {
+                         Write-Verbose "  Skipping line (no match or blank): $line"
+                    }
+                } # End Get-Content | ForEach-Object
+
+                # --- Post-parsing checks/cleanup (Optional but ensures array type) ---
+                # This loop ensures Allowed*Keys are always arrays, even if parsing somehow yielded a scalar
+                foreach($keyTypeForArrayCheck in @('AllowedCentralKeys', 'AllowedSAIAKeys', 'AllowedRLKeys', 'AllowedAverittKeys')) {
+                    # Check if the key exists AND if its value is NOT already an array
+                    if ($profileData.ContainsKey($keyTypeForArrayCheck) -and -not ($profileData[$keyTypeForArrayCheck] -is [array])) {
+                        Write-Warning "Value for $keyTypeForArrayCheck in profile '$($profileData.CustomerName)' was not an array after parsing. Converting."
+                        # If it was a single non-empty string, make it an array of one.
+                        if ($profileData[$keyTypeForArrayCheck] -is [string] -and -not [string]::IsNullOrWhiteSpace($profileData[$keyTypeForArrayCheck])) {
+                            $profileData[$keyTypeForArrayCheck] = @($profileData[$keyTypeForArrayCheck])
+                        } else {
+                            # Otherwise (e.g., empty string, $null, other type), force to empty array.
+                            $profileData[$keyTypeForArrayCheck] = @()
                         }
                     }
+                    # If key doesn't exist, pre-initialization already set it to @()
+                    # If key exists and IS an array, do nothing.
                 }
 
-                if (-not $profileData.ContainsKey('CustomerName') -or [string]::IsNullOrWhiteSpace($profileData.CustomerName) ) {
-                    $profileData['CustomerName'] = $customerNameFromFile
-                }
-                
-                foreach($keyType in @('AllowedCentralKeys', 'AllowedSAIAKeys', 'AllowedRLKeys', 'AllowedAverittKeys')) { # Added Averitt for completeness from error
-                    if ($profileData.ContainsKey($keyType) -and -not ($profileData[$keyType] -is [array])) {
-                        # If it's a single string (not null/empty), convert to an array of one
-                        if(-not [string]::IsNullOrWhiteSpace($profileData[$keyType])) {
-                            $profileData[$keyType] = @($profileData[$keyType])
-                        } else { # If it's an empty string or $null, make it an empty array
-                            $profileData[$keyType] = @()
-                        }
-                    } elseif (-not $profileData.ContainsKey($keyType)) {
-                        $profileData[$keyType] = @() 
-                    }
-                }
-                # <<< MODIFICATION: No need to cast to PSCustomObject here, it's already a hashtable >>>
-                $allProfiles[$profileData.CustomerName] = $profileData 
-                Write-Verbose "Loaded customer profile: $($profileData.CustomerName)"
+                # --- Store the profile ---
+                $customerKeyForStorage = $profileData.CustomerName # Use the potentially overridden CustomerName
+                # Write-Host "DEBUG Load-AllCustomerProfiles: Storing profile for '$customerNameFromFile' under key '$customerKeyForStorage'." #-ForegroundColor Magenta
+                # Write-Host "DEBUG Load-AllCustomerProfiles: Final keys in profileData for '$customerKeyForStorage': $($profileData.Keys -join ', ')" #-ForegroundColor Magenta
+                $allProfiles[$customerKeyForStorage] = $profileData
+                Write-Verbose "Load successful for customer profile: $customerKeyForStorage"
 
             } catch {
-                Write-Warning "Could not process customer profile file '$($file.Name)': $($_.Exception.Message)"
+                Write-Warning "Load-AllCustomerProfiles: Could not process customer profile file '$($file.Name)'. Error: $($_.Exception.Message)"
+                Write-Warning "Load-AllCustomerProfiles: Profile data for '$customerNameFromFile' might be incomplete or not stored."
             }
-        }
+        } # End foreach ($file in $profileFiles)
+
     } else {
         Write-Verbose "No .txt profile files found in '$UserAccountsFolderPath'."
     }

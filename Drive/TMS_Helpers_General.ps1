@@ -29,9 +29,10 @@ function Ensure-DirectoryExists {
 function Select-CsvFile {
     param( [string]$DialogTitle = "Select CSV File", [string]$InitialDirectory = $script:shipmentDataFolderPath )
     if ([string]::IsNullOrWhiteSpace($InitialDirectory) -or -not (Test-Path $InitialDirectory)) {
-         $InitialDirectory = $script:scriptRoot # Assumes $script:scriptRoot is set by the calling GUI script
+         # Fallback to script root if specific folder doesn't exist
+         $InitialDirectory = $script:scriptRoot # Assumes $script:scriptRoot is set by the calling script
          if ($null -eq $InitialDirectory -or -not(Test-Path $InitialDirectory)) {
-              Write-Warning "Cannot determine initial directory from script:scriptRoot. Defaulting to C:\."
+              Write-Warning "Cannot determine initial directory from script:shipmentDataFolderPath or script:scriptRoot. Defaulting to C:\."
               $InitialDirectory = "C:\"
          }
     }
@@ -47,10 +48,10 @@ function Select-CsvFile {
 function Clear-HostAndDrawHeader { # Console Specific
     param(
         [Parameter(Mandatory=$true)][string]$Title,
-        [string]$User = $null 
+        [string]$User = $null
     )
     Clear-Host
-    $border = "=" * ($Title.Length + 4) 
+    $border = "=" * ($Title.Length + 4)
     Write-Host $border -ForegroundColor Blue
     Write-Host ("  " + $Title + "  ") -ForegroundColor White
     if (-not [string]::IsNullOrWhiteSpace($User)) {
@@ -61,7 +62,7 @@ function Clear-HostAndDrawHeader { # Console Specific
          Write-Host $userDisplay.PadRight($border.Length - 2) -ForegroundColor White
     }
     Write-Host $border -ForegroundColor Blue
-    Write-Host "" 
+    Write-Host ""
 }
 
 function Write-LoadingBar { # Console Specific
@@ -103,52 +104,77 @@ function Load-KeysFromFolder { # Used by GUI startup
     $keyFiles = Get-ChildItem -Path $KeysFolderPath -Filter "*.txt" -File -ErrorAction SilentlyContinue
     if ($keyFiles) {
         foreach ($file in $keyFiles) {
-            $keyNameFromFile = $file.BaseName; $keyDataHashtable = @{}; $isFirstLine = $true
+            $keyNameFromFile = $file.BaseName; $keyDataHashtable = @{};
             try {
-                $lines = Get-Content -Path $file.FullName -ErrorAction Stop
+                # Read lines, skipping blank/comment lines
+                $lines = Get-Content -Path $file.FullName -ErrorAction Stop | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') }
                 foreach ($line in $lines) {
-                    $trimmedLine = $line.Trim(); if ([string]::IsNullOrWhiteSpace($trimmedLine) -or $trimmedLine.StartsWith('#')) { continue } 
-                    $equalsIndex = $trimmedLine.IndexOf('=')
-                    if ($equalsIndex -gt 0) {
-                        $key = $trimmedLine.Substring(0, $equalsIndex).Trim(); $value = $trimmedLine.Substring($equalsIndex + 1).Trim()
-                        # Strip potential source control markers from the key name on the first line (Corrected regex)
-                        if ($isFirstLine -and $key -match '^\[source:\s*\d+\]\s*(.*)') { $actualKey = $Matches[1].Trim(); if (-not [string]::IsNullOrEmpty($actualKey)) { $key = $actualKey } }
-                        $isFirstLine = $false
+                    # Match Key=Value, trimming whitespace around key, value, and equals
+                    if ($line -match '^\s*([^=]+?)\s*=\s*(.*?)\s*$') {
+                        $key = $Matches[1]; $value = $Matches[2]
                         if (-not [string]::IsNullOrEmpty($key)) { $keyDataHashtable[$key] = $value }
-                    } else { Write-Warning "Skipping line (no '=') in '$($file.Name)': $line" }
-                } 
+                    } else { Write-Warning "Skipping line (no valid Key=Value) in '$($file.Name)': $line" }
+                }
+
                 if ($keyDataHashtable.Count -gt 0) {
-                    $keyDataHashtable['TariffFileName'] = $keyNameFromFile 
-                    if (-not $keyDataHashtable.ContainsKey('Name')) { $keyDataHashtable['Name'] = $keyNameFromFile }
+                    $keyDataHashtable['TariffFileName'] = $keyNameFromFile # Store original filename
+                    # Ensure 'Name' property exists, default to filename if not present
+                    if (-not $keyDataHashtable.ContainsKey('Name') -or [string]::IsNullOrWhiteSpace($keyDataHashtable['Name'])) {
+                        $keyDataHashtable['Name'] = $keyNameFromFile
+                    }
                     $loadedKeysAndMargins[$keyNameFromFile] = $keyDataHashtable; Write-Verbose "Loaded data for '$keyNameFromFile'."
 
-                    # Carrier Specific Validation (Moved to carrier-specific helpers if needed, or kept generic here)
-                    if (-not $keyDataHashtable.ContainsKey('MarginPercent')) { Write-Warning "'$($file.Name)' missing 'MarginPercent'."} elseif ($keyDataHashtable['MarginPercent'] -as [double] -eq $null) { Write-Warning "Invalid 'MarginPercent' in '$($file.Name)'." }
-                    # Basic checks that could apply to any key file
-                    # Add more general checks if applicable
-                } else { Write-Warning "No valid Key=Value pairs in '$($file.Name)'." }
+                    # Validate MarginPercent existence and basic numeric format
+                    if (-not $keyDataHashtable.ContainsKey('MarginPercent')) { Write-Warning "'$($file.Name)' missing 'MarginPercent'."}
+                    elseif ($keyDataHashtable['MarginPercent'] -as [double] -eq $null) { Write-Warning "Invalid numeric format for 'MarginPercent' in '$($file.Name)' (Value: '$($keyDataHashtable['MarginPercent'])')."}
+
+                } else { Write-Warning "No valid Key=Value pairs found or parsed in '$($file.Name)'." }
             } catch { Write-Warning "Could not process key file '$($file.Name)': $($_.Exception.Message)" }
-        } 
+        }
     } else { Write-Verbose "No .txt key files found in '$KeysFolderPath'." }
     Write-Host "Loaded $($loadedKeysAndMargins.Count) $CarrierName key(s)/account(s)." -ForegroundColor Gray
     return $loadedKeysAndMargins
 }
 
 
-function Get-PermittedKeys { # Used by GUI
-    param( [Parameter(Mandatory)][hashtable]$AllKeys, [Parameter(Mandatory)][array]$AllowedKeyNames )
+function Get-PermittedKeys { # Used by GUI and other modules
+    param(
+        [Parameter(Mandatory)][hashtable]$AllKeys,
+        # <<< MODIFICATION: Added [AllowEmptyCollection()] >>>
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$AllowedKeyNames
+    )
+    $callingFunction = (Get-PSCallStack)[1].FunctionName # Get the name of the function that called this one
+    # Write-Host "DEBUG Get-PermittedKeys: Called by [$callingFunction]." -ForegroundColor Cyan # Debugging lines removed
+    # Write-Host "DEBUG Get-PermittedKeys: Received AllowedKeyNames Count = $($AllowedKeyNames.Count). Names = $($AllowedKeyNames -join ', ')" -ForegroundColor Cyan
+    # Write-Host "DEBUG Get-PermittedKeys: Received AllKeys Count = $($AllKeys.Count)." -ForegroundColor Cyan
+
     $permittedKeys = @{}
-    if ($null -ne $AllowedKeyNames) {
+    if ($null -ne $AllowedKeyNames) { # Check if array itself is null
+        # Dump AllKeys keys for comparison (optional, can be verbose)
+        # $AllKeys.Keys | Sort-Object | % { Write-Host "  Available Key in AllKeys: '$_'" }
+
         foreach ($allowedName in $AllowedKeyNames) {
-             if ([string]::IsNullOrWhiteSpace($allowedName)) { continue }
-             if ($AllKeys.ContainsKey($allowedName)) {
-                 if ($AllKeys[$allowedName] -is [hashtable]) { $permittedKeys[$allowedName] = $AllKeys[$allowedName] }
-                 else { Write-Warning "Value for key '$allowedName' was not a hashtable." }
-             } else { Write-Warning "User allowed key '$allowedName' not found in loaded keys for the current carrier." }
+             if ([string]::IsNullOrWhiteSpace($allowedName)) { Write-Verbose "Get-PermittedKeys: Skipping blank allowedName."; continue }
+
+             $containsKeyResult = $AllKeys.ContainsKey($allowedName)
+             # Write-Host "DEBUG Get-PermittedKeys: Checking if AllKeys contains '$allowedName' -> $containsKeyResult" -ForegroundColor Yellow # Debugging removed
+
+             if ($containsKeyResult) {
+                 if ($AllKeys[$allowedName] -is [hashtable]) {
+                     $permittedKeys[$allowedName] = $AllKeys[$allowedName]
+                     # Write-Host "DEBUG Get-PermittedKeys: Added '$allowedName' to permittedKeys." -ForegroundColor Green # Debugging removed
+                 } else { Write-Warning "Value for key '$allowedName' was not a hashtable." }
+             } else {
+                 Write-Warning "User allowed key '$allowedName' not found in loaded keys for the current carrier."
+                 # Dump keys again if there's a mismatch, helps spot subtle differences
+                 # $AllKeys.Keys | Sort-Object | % { Write-Host "    Available Key: '$_'" }
+             }
         }
     }
+    # Write-Host "DEBUG Get-PermittedKeys: Returning $($permittedKeys.Count) permitted keys." -ForegroundColor Cyan # Debugging removed
     return $permittedKeys
 }
+
 
 function Identify-BlanketKey { # Used by console version, might be useful for GUI logic too
     param( [Parameter(Mandatory)][hashtable]$PermittedKeys )
@@ -157,7 +183,7 @@ function Identify-BlanketKey { # Used by console version, might be useful for GU
         if ($keyDataValue -is [hashtable]) {
             if (($keyDataValue.ContainsKey('Name') -and $keyDataValue.Name -match 'Blanket') -or
                 ($keyDataValue.ContainsKey('AccountName') -and $keyDataValue.AccountName -match 'Blanket') -or
-                ($keyDataValue.ContainsKey('TariffFileName') -and $keyDataValue.TariffFileName -match 'Blanket')) { 
+                ($keyDataValue.ContainsKey('TariffFileName') -and $keyDataValue.TariffFileName -match 'Blanket')) {
                 Write-Verbose "Identified Blanket Key via property/filename: $($keyDataValue.TariffFileName)"
                 return $keyDataValue
             }
@@ -171,45 +197,35 @@ function Select-SingleKeyEntry { # Console Specific
     $selectableKeys = $AvailableKeys.Keys | Where-Object { $_ -notin $ExcludeNames } | Sort-Object
     if ($selectableKeys.Count -eq 0) { Write-Warning "No keys available matching criteria."; return $null }
 
-    Write-Verbose "DEBUG (Select-SingleKeyEntry): Selectable keys array:"
-    $selectableKeys | ForEach-Object { Write-Verbose "  - '$_'" }
-
     Write-Host "`n$PromptMessage" -ForegroundColor Yellow; Write-Host "---" -ForegroundColor DarkGray
     for ($i=0; $i -lt $selectableKeys.Count; $i++) {
-        Write-Verbose "DEBUG (Select-SingleKeyEntry): Displaying item index {$i}: '$($selectableKeys[$i])'"
         Write-Host (" [{0,2}] : {1}" -f ($i + 1), $selectableKeys[$i])
     }
     Write-Host " [ b ] : Go Back" -ForegroundColor White; Write-Host "---" -ForegroundColor DarkGray
     $selectedDetails = $null
-    while($true) { 
+    while($true) {
         $input = Read-Host "Enter number (1-$($selectableKeys.Count)) or 'b'"
-        if ($input -eq 'b') { Write-Host "Cancelled." -ForegroundColor Yellow; return $null } 
+        if ($input -eq 'b') { Write-Host "Cancelled." -ForegroundColor Yellow; return $null }
         try {
             if ($input -match '^\d+$') {
-                $idx = [int]$input 
-                if ($idx -ge 1 -and $idx -le $selectableKeys.Count) { 
-                    $selectedKeyName = $selectableKeys[$idx-1] 
+                $idx = [int]$input
+                if ($idx -ge 1 -and $idx -le $selectableKeys.Count) {
+                    $selectedKeyName = $selectableKeys[$idx-1]
                     $selectedDetails = $AvailableKeys[$selectedKeyName]
                     if ($selectedDetails -ne $null) {
                         Write-Host " -> Selected: '$selectedKeyName'" -ForegroundColor Green; Start-Sleep -Milliseconds 300
-                        break 
-                    } else {
-                        Write-Warning "Internal error: Could not retrieve details for selected key '$selectedKeyName'."
-                        $selectedDetails = $null 
-                    }
+                        break
+                    } else { Write-Warning "Internal error: Could not retrieve details for '$selectedKeyName'." }
                 } else { Write-Warning "Out of range." }
-            } else { Write-Warning "Invalid input."} 
-        } catch {
-             Write-Warning "Input error: $($_.Exception.Message)"; $selectedDetails = $null 
-        }
-    } 
+            } else { Write-Warning "Invalid input."}
+        } catch { Write-Warning "Input error: $($_.Exception.Message)" }
+    }
+    # Ensure Name property exists if possible
     if ($selectedDetails -is [hashtable] -and -not $selectedDetails.ContainsKey('Name')) {
         $nameToAdd = if ($selectedDetails.ContainsKey('AccountName')) { $selectedDetails.AccountName } `
                      elseif ($selectedDetails.ContainsKey('TariffFileName')) { $selectedDetails.TariffFileName } `
-                     else { $selectedKeyName } 
-        if ([string]::IsNullOrWhiteSpace($nameToAdd) -and $selectedDetails.ContainsKey('TariffFileName')) {
-            $nameToAdd = $selectedDetails.TariffFileName
-        }
+                     else { $selectedKeyName }
+        if ([string]::IsNullOrWhiteSpace($nameToAdd) -and $selectedDetails.ContainsKey('TariffFileName')) { $nameToAdd = $selectedDetails.TariffFileName }
         $selectedDetails['Name'] = $nameToAdd
     }
     return $selectedDetails
@@ -219,13 +235,13 @@ function Select-SingleKeyEntry { # Console Specific
 
 function Get-MinimumRate {
     param(
-        [Parameter(Mandatory=$true)][hashtable]$RateResults 
+        [Parameter(Mandatory=$true)][hashtable]$RateResults
     )
     $lowestCost = $null
     $bestTariff = $null
     foreach ($tariffName in $RateResults.Keys) {
-         $cost = $RateResults[$tariffName] 
-         if ($cost -ne $null -and $cost -is [decimal] -and $cost -gt 0) { 
+         $cost = $RateResults[$tariffName]
+         if ($cost -ne $null -and $cost -is [decimal] -and $cost -gt 0) {
               if ($lowestCost -eq $null -or $cost -lt $lowestCost) {
                    $lowestCost = $cost
                    $bestTariff = $tariffName
@@ -241,31 +257,34 @@ function Get-MinimumRate {
 
 function Get-HistoricalAveragePrice {
     param( [Parameter(Mandatory)] [string]$OriginZip, [Parameter(Mandatory)] [string]$DestinationZip, [Parameter(Mandatory)] [double]$Weight, [Parameter(Mandatory)] [string]$FreightClass )
-    $histFileName = $Global:HistoricalDataSourceFileName 
-    if ([string]::IsNullOrWhiteSpace($histFileName)) { Write-Warning "HistoricalDataSourceFileName not set in config."; return $null }
+    $histFileName = $Global:HistoricalDataSourceFileName
+    if ([string]::IsNullOrWhiteSpace($histFileName)) { Write-Warning "HistoricalDataSourceFileName not set."; return $null }
     $histPath = Join-Path $script:shipmentDataFolderPath $histFileName # Assumes $script:shipmentDataFolderPath is set
     Write-Verbose "Lookup hist avg: $OriginZip->$DestinationZip Wt:$Weight Cls:$FreightClass File: $(Split-Path $histPath -Leaf)"
     $cutoff = (Get-Date).AddMonths(-12); $avgPrice = $null
     if (-not (Test-Path $histPath -PathType Leaf)) { Write-Warning "Hist file missing: $histPath"; return $null }
-    if ([string]::IsNullOrWhiteSpace($OriginZip) -or $OriginZip.Length -lt 3 -or [string]::IsNullOrWhiteSpace($DestinationZip) -or $DestinationZip.Length -lt 3) { Write-Warning "Hist Lookup Skip: Origin/Dest ZIP too short or missing."; return $null }
+    if ([string]::IsNullOrWhiteSpace($OriginZip) -or $OriginZip.Length -lt 3 -or [string]::IsNullOrWhiteSpace($DestinationZip) -or $DestinationZip.Length -lt 3) { Write-Warning "Hist Lookup Skip: ZIP too short."; return $null }
 
     $oZip3=$OriginZip.Substring(0,3); $dZip3=$DestinationZip.Substring(0,3)
-    $tolerance = $Global:HistoricalWeightTolerance 
-    if ($null -eq $tolerance) { Write-Warning "HistoricalWeightTolerance not set in config. Defaulting to 0.10"; $tolerance = 0.10 }
+    $tolerance = $Global:HistoricalWeightTolerance
+    if ($null -eq $tolerance) { Write-Warning "HistoricalWeightTolerance not set. Defaulting to 0.10"; $tolerance = 0.10 }
     $minWt=$Weight*(1.0 - $tolerance); $maxWt=$Weight*(1.0 + $tolerance)
     Write-Verbose " -> Hist Weight Range: $minWt - $maxWt"
 
     try {
         $hist = Import-Csv -Path $histPath -ErrorAction Stop
-        $oZipCol='Origin Postal Code'; $dZipCol='Destination Postal Code'; $wtCol='Total Weight'; $clsCol='Freight Class 1'; $prcCol='Price'; $dtCol='Booked Date' 
+        # Dynamic column name detection
         $hdr = $hist[0].PSObject.Properties.Name
-        $reqHistCols = @($oZipCol, $dZipCol, $wtCol, $clsCol, $prcCol, $dtCol)
-        $missingHistCols = $reqHistCols | Where-Object { $_ -notin $hdr }
-        if ($missingHistCols) { Write-Warning "Hist file '$histPath' missing required columns: $($missingHistCols -join ', ')"; return $null }
+        $oZipCol = $hdr | Where-Object { $_ -match 'Origin.*(Postal|Zip).*Code' } | Select-Object -First 1
+        $dZipCol = $hdr | Where-Object { $_ -match 'Destination.*(Postal|Zip).*Code' } | Select-Object -First 1
+        $wtCol = $hdr | Where-Object { $_ -match 'Total.*Weight' } | Select-Object -First 1
+        $clsCol = $hdr | Where-Object { $_ -match 'Freight.*Class.*1' } | Select-Object -First 1
+        $prcCol = $hdr | Where-Object { $_ -match '^(Price|Booked.*Price|Final.*Price)$' } | Select-Object -First 1
+        $dtCol = $hdr | Where-Object { $_ -match 'Booked.*Date' } | Select-Object -First 1
+        if (-not $oZipCol -or -not $dZipCol -or -not $wtCol -or -not $clsCol -or -not $prcCol -or -not $dtCol) { Write-Warning "Hist file '$histPath' missing one or more required columns (Origin/Dest Zip, Weight, Class, Price, Booked Date). Cannot perform lookup."; return $null }
 
         $similarShipmentsData = $hist | Where-Object {
-            $rowWeight = $null; $rowPrice = $null; $rowDate = $null; $rowOZip = $null; $rowDZip = $null; $rowClass = $null
-            $isValid = $true
+            $rowWeight = $null; $rowPrice = $null; $rowDate = $null; $rowOZip = $null; $rowDZip = $null; $rowClass = $null; $isValid = $true
             try { $rowOZip = $_.$oZipCol; if([string]::IsNullOrWhiteSpace($rowOZip) -or $rowOZip.Length -lt 3) {$isValid=$false} } catch {$isValid=$false}
             if($isValid){ try { $rowDZip = $_.$dZipCol; if([string]::IsNullOrWhiteSpace($rowDZip) -or $rowDZip.Length -lt 3) {$isValid=$false} } catch {$isValid=$false} }
             if($isValid){ try { $rowClass = $_.$clsCol; if([string]::IsNullOrWhiteSpace($rowClass)) {$isValid=$false} } catch {$isValid=$false} }
@@ -273,28 +292,14 @@ function Get-HistoricalAveragePrice {
             if($isValid){ try { $rowPrice = [double]$_.$prcCol; if($rowPrice -le 0) {$isValid=$false} } catch {$isValid=$false} }
             if($isValid){ try { $rowDate = [datetime]$_.$dtCol } catch {$isValid=$false} }
 
-            if ($isValid) {
-                ($rowDate -ge $cutoff) -and
-                ($rowOZip.Substring(0, 3) -eq $oZip3) -and
-                ($rowDZip.Substring(0, 3) -eq $dZip3) -and
-                ($rowClass -eq $FreightClass) -and
-                ($rowWeight -ge $minWt) -and
-                ($rowWeight -le $maxWt)
-            } else {
-                $false 
-            }
-        } | Select-Object -ExpandProperty $prcCol 
+            if ($isValid) { ($rowDate -ge $cutoff) -and ($rowOZip.Substring(0, 3) -eq $oZip3) -and ($rowDZip.Substring(0, 3) -eq $dZip3) -and ($rowClass -eq $FreightClass) -and ($rowWeight -ge $minWt) -and ($rowWeight -le $maxWt) } else { $false }
+        } | Select-Object -ExpandProperty $prcCol
 
         if ($similarShipmentsData -and $similarShipmentsData.Count -gt 0) {
-            $measureResult = $similarShipmentsData | Measure-Object -Average -ErrorAction Stop
-            if ($measureResult) {
-                 if ($measureResult.PSObject.Properties.Name -contains 'Average') {
-                     $avgPrice = [math]::Round($measureResult.Average, 2)
-                     Write-Verbose "Found $($similarShipmentsData.Count) hist matches (avg price: $avgPrice)"
-                 } else {
-                      Write-Warning "Measure-Object result did not contain 'Average' property."
-                 }
-            } else { Write-Warning "Measure-Object failed for historical data." }
+            $measureResult = $similarShipmentsData | Measure-Object -Average -ErrorAction SilentlyContinue
+            if ($measureResult -and $measureResult.PSObject.Properties.Name -contains 'Average') {
+                $avgPrice = [math]::Round($measureResult.Average, 2); Write-Verbose "Found $($similarShipmentsData.Count) hist matches (avg price: $avgPrice)"
+            } else { Write-Warning "Measure-Object failed for historical data or result missing 'Average' property." }
         } else { Write-Verbose "No similar hist found matching all criteria." }
     } catch { Write-Error "Hist proc err: $($_.Exception.Message)" }
     return $avgPrice
@@ -303,46 +308,26 @@ function Get-HistoricalAveragePrice {
 function Calculate-QuotePrice {
     param( [Parameter(Mandatory)] [decimal]$LowestCarrierCost, [Parameter(Mandatory)] [string]$OriginZip, [Parameter(Mandatory)] [string]$DestinationZip, [Parameter(Mandatory)] [double]$Weight, [Parameter(Mandatory)] [string]$FreightClass, [Parameter(Mandatory)] [double]$MarginPercent )
     $stdMarginPrice = $null
-    $marginDec = [decimal]$MarginPercent / 100.0 
+    $marginDec = [decimal]$MarginPercent / 100.0
     if ($LowestCarrierCost -gt 0) {
         if ((1.0 - $marginDec) -ne 0) {
              try { $stdMarginPrice = [math]::Round(($LowestCarrierCost / (1.0 - $marginDec)), 2) }
              catch { Write-Warning "Error calculating standard margin price: $($_.Exception.Message)" }
-        } else {
-             Write-Warning "Cannot calculate standard margin price with 100% margin."
-        }
-    } else {
-         Write-Verbose "Lowest carrier cost is zero or less, cannot calculate standard margin price."
-    }
+        } else { Write-Warning "Cannot calculate standard margin price with 100% margin." }
+    } else { Write-Verbose "Lowest carrier cost is zero or less, cannot calculate standard margin price." }
+
     $histAvgPrice = Get-HistoricalAveragePrice -OriginZip $OriginZip -DestinationZip $DestinationZip -Weight $Weight -FreightClass $FreightClass
     $finalPrice=$null; $reason="Error"
+
     if ($stdMarginPrice -ne $null -and $histAvgPrice -ne $null -and $histAvgPrice -gt 0) {
-        if ($histAvgPrice -gt $stdMarginPrice) {
-             $finalPrice = $histAvgPrice
-             $reason = "Historical Avg Used (Higher than Std Margin Price)"
-        } else {
-             $finalPrice = $stdMarginPrice
-             $reason = "Standard Margin ($($MarginPercent)%) Used (Higher/Equal to Hist Avg)"
-        }
-    } elseif ($stdMarginPrice -ne $null) {
-        $finalPrice = $stdMarginPrice
-        $reason = "Standard Margin ($($MarginPercent)%) Used (No Valid Historical Avg)"
-    } elseif ($histAvgPrice -ne $null -and $histAvgPrice -gt 0) {
-        $finalPrice = $histAvgPrice
-        $reason = "Historical Avg Used (Std Margin Calculation Error)"
-    } else {
-        Write-Warning "Cannot determine a valid final price (Std Margin Price and Historical Avg are both invalid or zero)."
-        $reason = "Calculation Error (No valid price source)"
-    }
+        if ($histAvgPrice -gt $stdMarginPrice) { $finalPrice = $histAvgPrice; $reason = "Historical Avg Used (Higher than Std Margin Price)" }
+        else { $finalPrice = $stdMarginPrice; $reason = "Standard Margin ($($MarginPercent)%) Used (Higher/Equal to Hist Avg)" }
+    } elseif ($stdMarginPrice -ne $null) { $finalPrice = $stdMarginPrice; $reason = "Standard Margin ($($MarginPercent)%) Used (No Valid Historical Avg)" }
+    elseif ($histAvgPrice -ne $null -and $histAvgPrice -gt 0) { $finalPrice = $histAvgPrice; $reason = "Historical Avg Used (Std Margin Calculation Error)" }
+    else { Write-Warning "Cannot determine a valid final price (Std Margin Price and Historical Avg are both invalid or zero)."; $reason = "Calculation Error (No valid price source)" }
+
     $finalPriceRounded = if($finalPrice -ne $null){[math]::Round($finalPrice, 2)}else{$null}
-    return [PSCustomObject]@{
-        LowestCost = $LowestCarrierCost
-        StandardMarginPrice = $stdMarginPrice
-        HistoricalAvgPrice = $histAvgPrice
-        MarginUsedPercent = $MarginPercent
-        FinalPrice = $finalPriceRounded
-        Reason = $reason
-    }
+    return [PSCustomObject]@{ LowestCost = $LowestCarrierCost; StandardMarginPrice = $stdMarginPrice; HistoricalAvgPrice = $histAvgPrice; MarginUsedPercent = $MarginPercent; FinalPrice = $finalPriceRounded; Reason = $reason }
 }
 
 function Write-QuoteToHistory {
@@ -353,12 +338,12 @@ function Write-QuoteToHistory {
         [Parameter(Mandatory)] [string]$DestinationZip,
         [Parameter(Mandatory)] [double]$Weight,
         [Parameter(Mandatory)] [string]$FreightClass,
-        [Parameter(Mandatory)] [decimal]$LowestCost, 
-        [Parameter(Mandatory)] [decimal]$FinalQuotedPrice, 
-        [Parameter(Mandatory)] [string]$QuoteTimestamp 
+        [Parameter(Mandatory)] [decimal]$LowestCost,
+        [Parameter(Mandatory)] [decimal]$FinalQuotedPrice,
+        [Parameter(Mandatory)] [string]$QuoteTimestamp
      )
-    $logFileName = $Global:HistoricalQuotesLogFileName 
-    if ([string]::IsNullOrWhiteSpace($logFileName)) { Write-Warning "HistoricalQuotesLogFileName not set in config. Cannot log quote."; return }
+    $logFileName = $Global:HistoricalQuotesLogFileName
+    if ([string]::IsNullOrWhiteSpace($logFileName)) { Write-Warning "HistoricalQuotesLogFileName not set. Cannot log quote."; return }
     $logPath = Join-Path $script:shipmentDataFolderPath $logFileName # Assumes $script:shipmentDataFolderPath is set
 
     if ([string]::IsNullOrWhiteSpace($OriginZip) -or $OriginZip.Length -lt 3 -or [string]::IsNullOrWhiteSpace($DestinationZip) -or $DestinationZip.Length -lt 3){ Write-Warning "Quote Log Skip: ZIP too short or missing."; return }
@@ -367,31 +352,14 @@ function Write-QuoteToHistory {
     if ($FinalQuotedPrice -le 0) { Write-Warning "Quote Log Skip: Invalid Final Quoted Price."; return }
 
     $oZip3=$OriginZip.Substring(0,3); $dZip3=$DestinationZip.Substring(0,3)
-    $logEntry=[PSCustomObject]@{
-        Timestamp = $QuoteTimestamp
-        Carrier = $Carrier
-        Tariff = $TariffName
-        OriginZip3 = $oZip3
-        DestZip3 = $dZip3
-        Weight = $Weight
-        FreightClass = $FreightClass
-        LowestCost = $LowestCost 
-        FinalQuotedPrice = $FinalQuotedPrice 
-        OriginZipFull = $OriginZip
-        DestinationZipFull = $DestinationZip
-    }
+    $logEntry=[PSCustomObject]@{ Timestamp = $QuoteTimestamp; Carrier = $Carrier; Tariff = $TariffName; OriginZip3 = $oZip3; DestZip3 = $dZip3; Weight = $Weight; FreightClass = $FreightClass; LowestCost = $LowestCost; FinalQuotedPrice = $FinalQuotedPrice; OriginZipFull = $OriginZip; DestinationZipFull = $DestinationZip }
     try {
         Ensure-DirectoryExists -Path (Split-Path $logPath -Parent)
         $fileExists = Test-Path $logPath -PathType Leaf
-        if ($fileExists) {
-             $logEntry | Export-Csv -Path $logPath -NoTypeInformation -Append -Encoding UTF8 -ErrorAction Stop
-        } else {
-             $logEntry | Export-Csv -Path $logPath -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
-        }
+        if ($fileExists) { $logEntry | Export-Csv -Path $logPath -NoTypeInformation -Append -Encoding UTF8 -ErrorAction Stop }
+        else { $logEntry | Export-Csv -Path $logPath -NoTypeInformation -Encoding UTF8 -ErrorAction Stop }
         Write-Verbose "Quote logged: $logPath"
-    } catch {
-        Write-Error "Quote log fail '$logPath': $($_.Exception.Message)"
-    }
+    } catch { Write-Error "Quote log fail '$logPath': $($_.Exception.Message)" }
 }
 
 # --- Report Path Helper ---
@@ -399,23 +367,22 @@ function Get-ReportPath {
     param(
         [Parameter(Mandatory)][string]$BaseDir,
         [Parameter(Mandatory)][string]$Username,
-        [Parameter(Mandatory)][string]$Carrier, 
-        [Parameter(Mandatory)][string]$ReportType, 
-        [string]$FilePrefix = $null, 
+        [Parameter(Mandatory)][string]$Carrier,
+        [Parameter(Mandatory)][string]$ReportType,
+        [string]$FilePrefix = $null,
         [string]$FileExtension = "txt"
     )
     $userFolder = Join-Path -Path $BaseDir -ChildPath $Username
-    try {
-         Ensure-DirectoryExists -Path $userFolder 
-    } catch {
-         Write-Error "Failed to ensure user report directory '$userFolder' exists. Cannot generate report path."
-         return $null 
-    }
+    try { Ensure-DirectoryExists -Path $userFolder } catch { Write-Error "Failed to ensure user report directory '$userFolder'."; return $null }
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    # Sanitize inputs for filename
     $safeCarrier = $Carrier -replace '[^a-zA-Z0-9_-]', ''
     $safeReportType = $ReportType -replace '[^a-zA-Z0-9_-]', ''
     $safePrefix = if ($FilePrefix) { ($FilePrefix -replace '[^a-zA-Z0-9_-]', '').TrimStart('_').TrimEnd('_') + "_" } else { "" }
-    $fileName = "{0}_{1}_{2}{3}.{4}" -f $safeCarrier, $safeReportType, $safePrefix, $timestamp, $FileExtension
+    $safeExtension = $FileExtension -replace '[^a-zA-Z0-9]', ''
+    if ([string]::IsNullOrWhiteSpace($safeExtension)) { $safeExtension = "txt" } # Default extension if sanitization removed everything
+
+    $fileName = "{0}_{1}_{2}{3}.{4}" -f $safeCarrier, $safeReportType, $safePrefix, $timestamp, $safeExtension
     $fullPath = Join-Path -Path $userFolder -ChildPath $fileName
     Write-Verbose "Generated report path: $fullPath"
     return $fullPath
