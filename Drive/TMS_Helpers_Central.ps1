@@ -1,7 +1,6 @@
 # TMS_Helpers_Central.ps1
 # Description: Contains helper functions specific to Central Transport carrier operations,
 #              including data normalization and API interaction.
-#              Normalization updated to calculate dims based on density for reports.
 #              This file should be dot-sourced by the main script(s) after TMS_Config.ps1.
 
 # Assumes config variables like $script:centralApiUri are available from TMS_Config.ps1
@@ -10,11 +9,13 @@
 # --- Data Normalization Functions ---
 
 function Load-And-Normalize-CentralData {
-    # NOTE: Normalization updated for report dimension calculation based on density.
+    # NOTE: This function might need adjustments if your CSV structure changes
+    # to support multiple commodities per row for Central Transport reports.
+    # Currently, it assumes single commodity details per row based on original design.
     param([Parameter(Mandatory)][string]$CsvPath)
     Write-Host "`nLoading Central data: $(Split-Path $CsvPath -Leaf)" -ForegroundColor Cyan
-    # <<< Added Total Length, Total Density, Total Units to required cols >>>
-    $reqCols = @("Origin Postal Code", "Destination Postal Code", "Total Weight", "Freight Class 1", "Total Units", "Total Length", "Total Density")
+    # Required for single item mapping
+    $reqCols = @("Origin Postal Code", "Destination Postal Code", "Total Weight", "Freight Class 1", "Total Units", "Total Length", "Total Width", "Total Height")
     try {
         if (-not (Test-Path -Path $CsvPath -PathType Leaf)) {
             Write-Error "CSV file not found at '$CsvPath'."
@@ -26,87 +27,56 @@ function Load-And-Normalize-CentralData {
 
         $headers = $rawData[0].PSObject.Properties.Name
         $missing = $reqCols | Where-Object { $_ -notin $headers }
-        if ($missing.Count -gt 0) { Write-Error "CSV missing Central columns for dim calculation: $($missing -join ', ')"; return $null }
+        if ($missing.Count -gt 0) { Write-Error "CSV missing Central columns: $($missing -join ', ')"; return $null }
 
         $normData = [System.Collections.Generic.List[object]]::new()
-        Write-Host " -> Normalizing Central data (with Dim Calc)..." -ForegroundColor Gray
+        Write-Host " -> Normalizing Central data..." -ForegroundColor Gray
         $invalid = 0; $rowNum = 1
         foreach ($row in $rawData) {
             $rowNum++
-            $oZipRaw=$row."Origin Postal Code"; $dZipRaw=$row."Destination Postal Code"; $wtStrRaw=$row."Total Weight"; $clStrRaw=$row."Freight Class 1"; $pcsStrRaw=$row."Total Units"; $lenStrRaw=$row."Total Length"; $denStrRaw=$row."Total Density"
-            $oZip=$oZipRaw.Trim(); $dZip=$dZipRaw.Trim(); $wtStr=$wtStrRaw.Trim(); $clStr=$clStrRaw.Trim(); $pcsStr=$pcsStrRaw.Trim(); $lenStr=$lenStrRaw.Trim(); $denStr=$denStrRaw.Trim()
-            $wtNum=$null; $pcsNum=$null; $lenNum=$null; $denNum=$null;
+            $oZipRaw=$row."Origin Postal Code"; $dZipRaw=$row."Destination Postal Code"; $wtStrRaw=$row."Total Weight"; $clStrRaw=$row."Freight Class 1"; $pcsStrRaw=$row."Total Units"; $lenStrRaw=$row."Total Length"; $widStrRaw=$row."Total Width"; $hgtStrRaw=$row."Total Height"
+            $oZip=$oZipRaw.Trim(); $dZip=$dZipRaw.Trim(); $wtStr=$wtStrRaw.Trim(); $clStr=$clStrRaw.Trim(); $pcsStr=$pcsStrRaw.Trim(); $lenStr=$lenStrRaw.Trim(); $widStr=$widStrRaw.Trim(); $hgtStr=$hgtStrRaw.Trim()
+            $wtNum=$null; $pcsNum=$null; $lenNum=$null; $widNum=$null; $hgtNum=$null;
             $skipRow = $false
 
-            # Basic Validation
             if ([string]::IsNullOrWhiteSpace($oZip) -or $oZip.Length -lt 5) { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Origin Zip"; $skipRow = $true }
             if (-not $skipRow -and ([string]::IsNullOrWhiteSpace($dZip) -or $dZip.Length -lt 5)) { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Dest Zip"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($clStr)) { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Class"; $skipRow = $true } # Still useful check
+            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($clStr)) { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Class"; $skipRow = $true } # Class not needed for API, but good for data integrity check
+            # Numeric Validation
+            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Weight"; $skipRow = $true } }
+            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Pieces"; $skipRow = $true } }
+            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Length"; $skipRow = $true } }
+            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Width"; $skipRow = $true } }
+            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Height"; $skipRow = $true } }
 
-            # Numeric Validation for Calculation Inputs
-            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw "Total Weight must be positive."} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Total Weight"; $skipRow = $true } }
-            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw "Total Units must be positive."} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Total Units"; $skipRow = $true } }
-            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw "Total Length must be positive."} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Total Length"; $skipRow = $true } }
-            if (-not $skipRow) { try { $denNum = [decimal]$denStr; if($denNum -le 0){throw "Total Density must be positive."} } catch { $invalid++; Write-Verbose "Skip CTX Row ${rowNum}: Bad Total Density"; $skipRow = $true } }
 
-            if ($skipRow) { continue } # Skip if any essential validation failed
+            if (-not $skipRow) {
+                 # Create a single commodity item reflecting the API structure
+                 $weightPerUnit = 0.0
+                 if ($pcsNum -gt 0) { $weightPerUnit = [math]::Round($wtNum / $pcsNum, 2) }
 
-            # <<< Dimension Calculation Logic >>>
-            $weightPerUnit = 0.0; $lengthPerUnit = 0.0; $widthPerUnit = 48.0; $heightPerUnit = 0.0; $densityPerUnit = 0.0;
-            $calcValid = $true
-            try {
-                $weightPerUnit = [math]::Round($wtNum / $pcsNum, 2)
-                $lengthPerUnit = [math]::Round($lenNum / $pcsNum, 2)
-                $densityPerUnit = [math]::Round($denNum / $pcsNum, 2) # Density per unit might not be needed directly, but good to have
-
-                if ($densityPerUnit -eq 0) { throw "Density per unit cannot be zero for height calculation." }
-                if ($lengthPerUnit -eq 0) { throw "Length per unit cannot be zero for height calculation." }
-                if ($widthPerUnit -eq 0) { throw "Width per unit (fixed 48) cannot be zero for height calculation."}
-
-                # Height = (Weight / Density) / (Length * Width)
-                $volumePerUnit = $weightPerUnit / $densityPerUnit
-                $baseArea = $lengthPerUnit * $widthPerUnit
-                if ($baseArea -eq 0) { throw "Base area (L*W) cannot be zero for height calculation."}
-
-                $heightPerUnit = [math]::Round($volumePerUnit / $baseArea * 1728, 2) # Convert Volume (cu ft) to cu inches before dividing by area (sq in)
-
-                if ($heightPerUnit -le 0) { throw "Calculated height is zero or negative."}
-
-            } catch {
-                Write-Warning "Cannot calculate dimensions for Row ${rowNum}: $($_.Exception.Message). Skipping row."
-                $invalid++; $calcValid = $false
+                 $commodityItem = [ordered]@{
+                    id = 1 # Central API uses 'id' for rateItems
+                    handlingUnits = $pcsNum
+                    weightPerHandlingUnit = $weightPerUnit
+                    width = $widNum
+                    length = $lenNum
+                    height = $hgtNum
+                    # Store original values from CSV if needed for other purposes
+                    pieces = $pcsNum # Example - Store original pieces if needed later
+                    weight = $wtNum # Example - Store original total weight if needed later
+                    itemClass = $clStr # Example - Store original class if needed later
+                 }
+                 $normData.Add([PSCustomObject]@{
+                    "Origin Postal Code" = $oZip
+                    "Destination Postal Code" = $dZip
+                    "Commodities" = @($commodityItem) # Store as an array
+                    "Freight Class 1" = $clStr # Keep original class info if needed
+                 })
             }
-
-            if (-not $calcValid) { continue } # Skip if calculation failed
-
-            # Create commodity item using calculated values
-            $commodityItem = [ordered]@{
-                id = 1 # Central API uses 'id' for rateItems
-                handlingUnits = $pcsNum
-                weightPerHandlingUnit = $weightPerUnit
-                width = $widthPerUnit  # Fixed width
-                length = $lengthPerUnit # Calculated length
-                height = $heightPerUnit # Calculated height
-                itemClass = $clStr # Store original class if needed elsewhere
-                # Store original totals if needed for debugging/reference
-                # totalWeight = $wtNum
-                # totalUnits = $pcsNum
-                # totalLength = $lenNum
-                # totalDensity = $denNum
-            }
-            # <<< End Dimension Calculation Logic >>>
-
-            $normData.Add([PSCustomObject]@{
-                "Origin Postal Code" = $oZip
-                "Destination Postal Code" = $dZip
-                "Commodities" = @($commodityItem) # Pass the calculated item
-                "Freight Class 1" = $clStr # Keep original class info if needed
-            })
-
-        } # End foreach row
-
-        if ($invalid -gt 0) { Write-Warning " -> Skipped $invalid Central rows (missing/invalid data or calculation error)." }
-        Write-Host " -> OK: $($normData.Count) Central rows normalized (with Dim Calc)." -ForegroundColor Green
+        }
+        if ($invalid -gt 0) { Write-Warning " -> Skipped $invalid Central rows (missing/invalid data)." }
+        Write-Host " -> OK: $($normData.Count) Central rows normalized." -ForegroundColor Green
         return $normData
     } catch {
         Write-Error "Error processing Central CSV '$CsvPath': $($_.Exception.Message)"
@@ -184,7 +154,7 @@ function Invoke-CentralTransportApi {
     if ($commoditiesToUse -is [array]) {
         for ($i = 0; $i -lt $commoditiesToUse.Count; $i++) {
             $item = $commoditiesToUse[$i]
-            $itemHandlingUnits = $null; $itemWeightPerUnit = $null; $itemLength = $null; $itemWidth = $null; $itemHeight = $null;
+            $itemPieces = $null; $itemWeight = $null; $itemLength = $null; $itemWidth = $null; $itemHeight = $null;
             $isValidItem = $true
 
             # 1. Check if item itself is a valid object (not null)
@@ -193,13 +163,12 @@ function Invoke-CentralTransportApi {
             }
 
             # 2. Attempt to access properties directly and validate values
-            #    These names match the structure needed by the API payload
             try {
-                $itemHandlingUnits = $item.handlingUnits
-                if (($itemHandlingUnits -as [int]) -eq $null -or ([int]$itemHandlingUnits -le 0)) { $isValidItem = $false; $ctxMissing += "Item $($i+1) invalid handlingUnits value '$($itemHandlingUnits)'" }
+                $itemPieces = $item.pieces
+                if (($itemPieces -as [int]) -eq $null -or ([int]$itemPieces -le 0)) { $isValidItem = $false; $ctxMissing += "Item $($i+1) invalid pieces value '$($itemPieces)'" }
 
-                $itemWeightPerUnit = $item.weightPerHandlingUnit
-                if (($itemWeightPerUnit -as [decimal]) -eq $null -or ([decimal]$itemWeightPerUnit -le 0)) { $isValidItem = $false; $ctxMissing += "Item $($i+1) invalid weightPerHandlingUnit value '$($itemWeightPerUnit)'" }
+                $itemWeight = $item.weight
+                if (($itemWeight -as [decimal]) -eq $null -or ([decimal]$itemWeight -le 0)) { $isValidItem = $false; $ctxMissing += "Item $($i+1) invalid weight value '$($itemWeight)'" }
 
                 $itemLength = $item.length
                 if (($itemLength -as [decimal]) -eq $null -or ([decimal]$itemLength -le 0)) { $isValidItem = $false; $ctxMissing += "Item $($i+1) invalid length value '$($itemLength)'" }
@@ -212,24 +181,36 @@ function Invoke-CentralTransportApi {
 
             } catch {
                 # Catch errors if properties don't exist on $item
-                $isValidItem = $false; $ctxMissing += "Item $($i+1) missing required API properties (handlingUnits/weightPerHandlingUnit/dims) or access error: $($_.Exception.Message)"
+                $isValidItem = $false; $ctxMissing += "Item $($i+1) missing required properties (pieces/weight/dims) or access error: $($_.Exception.Message)"
             }
 
-            # 3. If still valid, add to payload list
+            # 3. If still valid, calculate weight per unit and add to payload list
             if ($isValidItem) {
-                $validCommoditiesForPayload += [ordered]@{
-                    id = $i + 1
-                    handlingUnits = [int]$itemHandlingUnits
-                    weightPerHandlingUnit = [decimal]$itemWeightPerUnit
-                    width = [decimal]$itemWidth # API expects number
-                    length = [decimal]$itemLength
-                    height = [decimal]$itemHeight
+                $weightPerUnit = 0.0
+                try {
+                    if ([int]$itemPieces -eq 0) { throw "Cannot divide by zero pieces."}
+                    $weightPerUnit = [math]::Round(([decimal]$itemWeight / [int]$itemPieces), 2)
+                    if ($weightPerUnit -lt 0) { throw "Calculated negative weight per unit." }
+                } catch {
+                     $isValidItem = $false; $ctxMissing += "Item $($i+1) calculation error for weight/unit: $($_.Exception.Message)"
+                }
+
+                if ($isValidItem) {
+                    # Add item using the keys expected by Central Transport API
+                    $validCommoditiesForPayload += [ordered]@{
+                        id = $i + 1
+                        handlingUnits = [int]$itemPieces
+                        weightPerHandlingUnit = $weightPerUnit # Use calculated value
+                        width = [decimal]$itemWidth # API expects number
+                        length = [decimal]$itemLength
+                        height = [decimal]$itemHeight
+                    }
                 }
             }
         } # End for loop
 
         if ($validCommoditiesForPayload.Count -eq 0 -and $commoditiesToUse.Count -gt 0) {
-             $ctxMissing += "No valid commodity items found after validation for API payload."
+             $ctxMissing += "No valid commodity items found after validation."
         }
     } else {
          $ctxMissing += "Commodities parameter is not an array."
