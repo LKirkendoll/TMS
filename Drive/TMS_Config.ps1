@@ -13,7 +13,7 @@ $script:defaultShipmentDataFolderName = "shipmentData"
 
 # --- API Endpoints ---
 # Use $script: scope so helper functions can access them via $script:
-$script:centralApiUri = 'https://client-api.centraltransport.com/api/v1/Quote/byClass' # Example URL
+$script:centralApiUri = 'https://client-api.centraltransport.com/api/v1/Quote/byDimensions' # Example URL
 $script:saiaApiUri = "https://api.saia.com/rate-quote/webservice/ratequote/customer-api" # Example URL
 $script:rlApiUri = "http://api.rlcarriers.com/1.0.3/RateQuoteService.asmx" # Example URL
 # <<< Added Averitt API URI from API Guide >>>

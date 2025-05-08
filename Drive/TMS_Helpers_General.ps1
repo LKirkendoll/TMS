@@ -5,8 +5,9 @@
 # Ensure necessary assemblies are loaded (if any GUI elements are directly created here, though most are in TMS_GUI.ps1)
 try {
     Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    Add-Type -AssemblyName System.Security -ErrorAction Stop # Needed for SecurityElement
 } catch {
-    Write-Error "Failed to load required .NET Assembly: System.Windows.Forms. Ensure .NET Framework is available."
+    Write-Error "Failed to load required .NET Assembly (System.Windows.Forms or System.Security). Ensure .NET Framework is available."
     throw "Assembly load failed."
 }
 
@@ -23,6 +24,17 @@ function Ensure-DirectoryExists {
         }
     }
 }
+
+# --- XML Helper Function ---
+# <<< FUNCTION ADDED >>>
+function Escape-Xml {
+    param( [Parameter(ValueFromPipeline)] $string )
+    if ($null -eq $string) { return '' }
+    # Use .NET method for reliable XML escaping
+    return [System.Security.SecurityElement]::Escape($string)
+}
+# <<< END FUNCTION ADDED >>>
+
 
 # --- User Interface Functions (Primarily for Console, but Select-CsvFile is for GUI) ---
 
@@ -140,38 +152,22 @@ function Load-KeysFromFolder { # Used by GUI startup
 function Get-PermittedKeys { # Used by GUI and other modules
     param(
         [Parameter(Mandatory)][hashtable]$AllKeys,
-        # <<< MODIFICATION: Added [AllowEmptyCollection()] >>>
-        [Parameter(Mandatory)][AllowEmptyCollection()][array]$AllowedKeyNames
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$AllowedKeyNames # Retained AllowEmptyCollection
     )
-    $callingFunction = (Get-PSCallStack)[1].FunctionName # Get the name of the function that called this one
-    # Write-Host "DEBUG Get-PermittedKeys: Called by [$callingFunction]." -ForegroundColor Cyan # Debugging lines removed
-    # Write-Host "DEBUG Get-PermittedKeys: Received AllowedKeyNames Count = $($AllowedKeyNames.Count). Names = $($AllowedKeyNames -join ', ')" -ForegroundColor Cyan
-    # Write-Host "DEBUG Get-PermittedKeys: Received AllKeys Count = $($AllKeys.Count)." -ForegroundColor Cyan
-
     $permittedKeys = @{}
     if ($null -ne $AllowedKeyNames) { # Check if array itself is null
-        # Dump AllKeys keys for comparison (optional, can be verbose)
-        # $AllKeys.Keys | Sort-Object | % { Write-Host "  Available Key in AllKeys: '$_'" }
-
         foreach ($allowedName in $AllowedKeyNames) {
              if ([string]::IsNullOrWhiteSpace($allowedName)) { Write-Verbose "Get-PermittedKeys: Skipping blank allowedName."; continue }
-
              $containsKeyResult = $AllKeys.ContainsKey($allowedName)
-             # Write-Host "DEBUG Get-PermittedKeys: Checking if AllKeys contains '$allowedName' -> $containsKeyResult" -ForegroundColor Yellow # Debugging removed
-
              if ($containsKeyResult) {
                  if ($AllKeys[$allowedName] -is [hashtable]) {
                      $permittedKeys[$allowedName] = $AllKeys[$allowedName]
-                     # Write-Host "DEBUG Get-PermittedKeys: Added '$allowedName' to permittedKeys." -ForegroundColor Green # Debugging removed
                  } else { Write-Warning "Value for key '$allowedName' was not a hashtable." }
              } else {
                  Write-Warning "User allowed key '$allowedName' not found in loaded keys for the current carrier."
-                 # Dump keys again if there's a mismatch, helps spot subtle differences
-                 # $AllKeys.Keys | Sort-Object | % { Write-Host "    Available Key: '$_'" }
              }
         }
     }
-    # Write-Host "DEBUG Get-PermittedKeys: Returning $($permittedKeys.Count) permitted keys." -ForegroundColor Cyan # Debugging removed
     return $permittedKeys
 }
 
@@ -306,7 +302,14 @@ function Get-HistoricalAveragePrice {
 }
 
 function Calculate-QuotePrice {
-    param( [Parameter(Mandatory)] [decimal]$LowestCarrierCost, [Parameter(Mandatory)] [string]$OriginZip, [Parameter(Mandatory)] [string]$DestinationZip, [Parameter(Mandatory)] [double]$Weight, [Parameter(Mandatory)] [string]$FreightClass, [Parameter(Mandatory)] [double]$MarginPercent )
+    param(
+        [Parameter(Mandatory)] [decimal]$LowestCarrierCost,
+        [Parameter(Mandatory)] [string]$OriginZip,
+        [Parameter(Mandatory)] [string]$DestinationZip, # <<< Corrected Parameter Name
+        [Parameter(Mandatory)] [double]$Weight,
+        [Parameter(Mandatory)] [string]$FreightClass,
+        [Parameter(Mandatory)] [double]$MarginPercent
+    )
     $stdMarginPrice = $null
     $marginDec = [decimal]$MarginPercent / 100.0
     if ($LowestCarrierCost -gt 0) {
@@ -339,7 +342,7 @@ function Write-QuoteToHistory {
         [Parameter(Mandatory)] [double]$Weight,
         [Parameter(Mandatory)] [string]$FreightClass,
         [Parameter(Mandatory)] [decimal]$LowestCost,
-        [Parameter(Mandatory)] [decimal]$FinalQuotedPrice,
+        [Parameter(Mandatory)] [decimal]$FinalQuotedPrice, # <<< Corrected Parameter Name
         [Parameter(Mandatory)] [string]$QuoteTimestamp
      )
     $logFileName = $Global:HistoricalQuotesLogFileName

@@ -385,15 +385,3 @@ function List-AverittPermittedKeysGUI {
 }
 
 Write-Verbose "TMS Averitt Carrier Functions loaded."
-```
-
-**Summary of Content:**
-
-* **`Run-AverittComparisonReportGUI`**: Compares costs between two Averitt accounts using data from a detailed CSV.
-* **`Run-AverittMarginReportGUI`**: Calculates the required margin for one Averitt account to match the selling price derived from another account's cost + margin.
-* **`Calculate-AverittMarginForASPReportGUI`**: Calculates the required margin for a single Averitt account to achieve a specific Average Selling Price (ASP).
-* **`List-AverittPermittedKeysGUI`**: Lists the details of Averitt accounts permitted for the selected customer (useful for debugging or console use).
-
-These functions rely heavily on `Load-And-Normalize-AverittData` and `Invoke-AverittApi` from the `TMS_Helpers_Averitt.ps1` file you created previously. Ensure those helper functions correctly map your CSV data to the format expected by the Averitt API.
-
-Let me know when you're ready for the final file, the fully integrated `TMS_GUI.ps

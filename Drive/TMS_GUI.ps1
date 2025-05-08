@@ -3,7 +3,7 @@
 GUI Front-end for the Transportation Management System Tool.
 Uses Windows Forms and leverages existing TMS PowerShell modules.
 Broker logs in (from user_accounts), then selects a customer (from customer_accounts) to work with.
-Includes Quote, Settings, and Reports tabs.
+Includes Quote, Settings, and Reports tabs. Handles multiple commodity items.
 #>
 
 # --- Load Required Assemblies ---
@@ -33,26 +33,33 @@ try {
         "TMS_Helpers_General.ps1",
         "TMS_GUI_Helpers.ps1", # <<< Ensure this uses the updated helpers
         "TMS_Auth.ps1",        # <<< Ensure this uses the updated helpers
-        "TMS_Helpers_Central.ps1",
-        "TMS_Helpers_SAIA.ps1",
-        "TMS_Helpers_RL.ps1",
-        # "TMS_Helpers_Averitt.ps1", # <<< COMMENTED OUT - File is missing
+        "TMS_Helpers_Central.ps1",  # <<< Needs latest version (multi-item)
+        "TMS_Helpers_SAIA.ps1",     # <<< Needs latest version (multi-item)
+        "TMS_Helpers_RL.ps1",       # <<< Needs latest version (multi-item)
+        "TMS_Helpers_Averitt.ps1",  # <<< Needs latest version (multi-item)
         "TMS_Carrier_Central.ps1",
         "TMS_Carrier_SAIA.ps1",
         "TMS_Carrier_RL.ps1",
-        # "TMS_Carrier_Averitt.ps1", # <<< COMMENTED OUT - Requires missing helper
+        "TMS_Carrier_Averitt.ps1",
         "TMS_Reports.ps1",
         "TMS_Settings.ps1"
     )
 
     foreach ($moduleFile in $moduleFiles) {
-        # Skip commented out lines
+        # Skip commented out lines if any were left
         if ($moduleFile.StartsWith('#')) { continue }
 
         $modulePath = Join-Path $script:scriptRoot $moduleFile
         Write-Verbose "Attempting to load module '$moduleFile' from '$modulePath'"
-        if (-not (Test-Path $modulePath -PathType Leaf)) { throw "Module not found: '$moduleFile' at '$modulePath'" }
-
+        if (-not (Test-Path $modulePath -PathType Leaf)) {
+             # If an Averitt helper/carrier file is optional and missing, just warn
+             if ($moduleFile -like "*Averitt*") {
+                 Write-Warning "Optional module not found: '$moduleFile'. Averitt functionality may be limited."
+                 continue # Skip to next file
+             } else {
+                throw "Required module not found: '$moduleFile' at '$modulePath'"
+             }
+        }
         try {
             . $modulePath
         } catch { Write-Error "ERROR loading module '$moduleFile': $($_.Exception.Message)"; throw $_ }
@@ -61,7 +68,11 @@ try {
      if (-not (Get-Command Populate-TariffListBox -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-TariffListBox' not found."}
      if (-not (Get-Command Populate-ReportTariffListBoxes -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-ReportTariffListBoxes' not found."}
      if (-not (Get-Command Update-TariffMargin -ErrorAction SilentlyContinue)) { throw "Required function 'Update-TariffMargin' not found."}
-     # Add other critical function checks...
+     # Verify API helpers exist (allow Averitt to be missing)
+     if (-not (Get-Command Invoke-CentralTransportApi -EA SilentlyContinue)){throw "Invoke-CentralTransportApi missing."}
+     if (-not (Get-Command Invoke-SAIAApi -EA SilentlyContinue)){throw "Invoke-SAIAApi missing."}
+     if (-not (Get-Command Invoke-RLApi -EA SilentlyContinue)){throw "Invoke-RLApi missing."}
+     # if (-not (Get-Command Invoke-AverittApi -EA SilentlyContinue)){Write-Warning "Invoke-AverittApi missing. Averitt quotes disabled."} # Optional check
 
     Write-Verbose "Module loading complete."
 } catch {
@@ -92,10 +103,7 @@ try {
     $script:allCentralKeys = Load-KeysFromFolder -KeysFolderPath $script:centralKeysFolderPath -CarrierName "Central Transport"
     $script:allSAIAKeys = Load-KeysFromFolder -KeysFolderPath $script:saiaKeysFolderPath -CarrierName "SAIA"
     $script:allRLKeys = Load-KeysFromFolder -KeysFolderPath $script:rlKeysFolderPath -CarrierName "RL Carriers"
-    # $script:allAverittKeys = Load-KeysFromFolder -KeysFolderPath $script:averittKeysFolderPath -CarrierName "Averitt" # <<< COMMENTED OUT - Requires missing helper? Or keep if Load-KeysFromFolder is generic enough
-    # Check if Load-KeysFromFolder works without the helper. If not, comment above line too. Assuming it might work for basic loading:
-    try { $script:allAverittKeys = Load-KeysFromFolder -KeysFolderPath $script:averittKeysFolderPath -CarrierName "Averitt" } catch { Write-Warning "Could not load Averitt keys (maybe needs specific helper?): $($_.Exception.Message)" }
-
+    $script:allAverittKeys = Load-KeysFromFolder -KeysFolderPath $script:averittKeysFolderPath -CarrierName "Averitt"
 } catch {
     $loadErrorMsg = "ERROR during Load-KeysFromFolder: $($_.Exception.Message). Check paths."; Write-Error $loadErrorMsg
     [System.Windows.Forms.MessageBox]::Show($loadErrorMsg, "Key Loading Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
@@ -148,33 +156,86 @@ $tabPageReports = New-Object System.Windows.Forms.TabPage; $tabPageReports.Text 
 $tabControlMain.Controls.AddRange(@($tabPageQuote, $tabPageSettings, $tabPageReports))
 
 # ============================================================
-# Quote Tab UI
+# Quote Tab UI (Multi-Item Version)
 # ============================================================
 $singleQuotePanel = New-Object System.Windows.Forms.Panel; $singleQuotePanel.Dock = [System.Windows.Forms.DockStyle]::Fill; $singleQuotePanel.BackColor = $colorPanel; $tabPageQuote.Controls.Add($singleQuotePanel)
+
+# --- Customer Selection (Top Right) ---
 $labelSelectCustomer_Quote = New-Object System.Windows.Forms.Label; $labelSelectCustomer_Quote.Text = "Select Customer:"; $labelSelectCustomer_Quote.Location = New-Object System.Drawing.Point(550, 15); $labelSelectCustomer_Quote.AutoSize = $true; $labelSelectCustomer_Quote.Font = $fontBold
 $comboBoxSelectCustomer_Quote = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Quote.Location = New-Object System.Drawing.Point(550, 35); $comboBoxSelectCustomer_Quote.Size = New-Object System.Drawing.Size(200, 23); $comboBoxSelectCustomer_Quote.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Quote.Enabled = $false;
-[int]$col1X = 15; [int]$col2X = 300; [int]$labelWidth = 90; [int]$textBoxWidth = 160; [int]$rowHeight = 30; $currentRowY = 15
+
+# --- Input Fields Layout ---
+[int]$col1X = 15; [int]$col2X = 300; [int]$labelWidth = 90; [int]$textBoxWidth = 160; [int]$rowHeight = 30
+$currentRowY = 15
+
+# Origin/Destination Headers
 $labelOriginHeader = New-Object System.Windows.Forms.Label; $labelOriginHeader.Text = "Origin Details:"; $labelOriginHeader.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginHeader.Font = $fontBold; $labelOriginHeader.AutoSize = $true; $labelOriginHeader.ForeColor = $colorPrimary
-$labelDestHeader = New-Object System.Windows.Forms.Label; $labelDestHeader.Text = "Destination Details:"; $labelDestHeader.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestHeader.Font = $fontBold; $labelDestHeader.AutoSize = $true; $labelDestHeader.ForeColor = $colorPrimary; $currentRowY += $rowHeight
+$labelDestHeader = New-Object System.Windows.Forms.Label; $labelDestHeader.Text = "Destination Details:"; $labelDestHeader.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestHeader.Font = $fontBold; $labelDestHeader.AutoSize = $true; $labelDestHeader.ForeColor = $colorPrimary
+$currentRowY += $rowHeight
+
+# ZIP Code Row
 $labelOriginZip = New-Object System.Windows.Forms.Label; $labelOriginZip.Text = "ZIP Code:"; $labelOriginZip.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxOriginZip = New-Object System.Windows.Forms.TextBox; $textboxOriginZip.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxOriginZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginZip.MaxLength = 5; $textboxOriginZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $labelDestZip = New-Object System.Windows.Forms.Label; $labelDestZip.Text = "ZIP Code:"; $labelDestZip.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxDestZip = New-Object System.Windows.Forms.TextBox; $textboxDestZip.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxDestZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxDestZip.MaxLength = 5; $textboxDestZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight
+
+# City Row
 $labelOriginCity = New-Object System.Windows.Forms.Label; $labelOriginCity.Text = "City:"; $labelOriginCity.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginCity.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginCity.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxOriginCity = New-Object System.Windows.Forms.TextBox; $textboxOriginCity.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxOriginCity.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginCity.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $labelDestCity = New-Object System.Windows.Forms.Label; $labelDestCity.Text = "City:"; $labelDestCity.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestCity.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestCity.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxDestCity = New-Object System.Windows.Forms.TextBox; $textboxDestCity.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxDestCity.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxDestCity.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight
+
+# State Row
 $labelOriginState = New-Object System.Windows.Forms.Label; $labelOriginState.Text = "State (2 Ltr):"; $labelOriginState.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginState.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginState.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxOriginState = New-Object System.Windows.Forms.TextBox; $textboxOriginState.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxOriginState.Size = New-Object System.Drawing.Size(50, 23); $textboxOriginState.MaxLength = 2; $textboxOriginState.CharacterCasing = [System.Windows.Forms.CharacterCasing]::Upper; $textboxOriginState.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$labelDestState = New-Object System.Windows.Forms.Label; $labelDestState.Text = "State (2 Ltr):"; $labelDestState.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestState.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestState.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxDestState = New-Object System.Windows.Forms.TextBox; $textboxDestState.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxDestState.Size = New-Object System.Drawing.Size(50, 23); $textboxDestState.MaxLength = 2; $textboxDestState.CharacterCasing = [System.Windows.Forms.CharacterCasing]::Upper; $textboxDestState.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight
-$labelWeight = New-Object System.Windows.Forms.Label; $labelWeight.Text = "Weight (lbs):"; $labelWeight.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelWeight.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelWeight.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxWeight = New-Object System.Windows.Forms.TextBox; $textboxWeight.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxWeight.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxWeight.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$labelClass = New-Object System.Windows.Forms.Label; $labelClass.Text = "Class:"; $labelClass.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelClass.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelClass.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxClass = New-Object System.Windows.Forms.TextBox; $textboxClass.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxClass.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxClass.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight + 10
-$groupBoxOptional = New-Object System.Windows.Forms.GroupBox; $groupBoxOptional.Text = "Optional Details"; $groupBoxOptional.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $groupBoxOptional.Size = New-Object System.Drawing.Size(510, 60);
-$labelLength = New-Object System.Windows.Forms.Label; $labelLength.Text = "L:"; $labelLength.Location = New-Object System.Drawing.Point(15, 25); $labelLength.AutoSize=$true; $textboxLength = New-Object System.Windows.Forms.TextBox; $textboxLength.Location = New-Object System.Drawing.Point(35, 22); $textboxLength.Size = New-Object System.Drawing.Size(45, 23); $textboxLength.Text = "1.0"; $textboxLength.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$labelWidthOpt = New-Object System.Windows.Forms.Label; $labelWidthOpt.Text = "W:"; $labelWidthOpt.Location = New-Object System.Drawing.Point(90, 25); $labelWidthOpt.AutoSize=$true; $textboxWidthOpt = New-Object System.Windows.Forms.TextBox; $textboxWidthOpt.Location = New-Object System.Drawing.Point(115, 22); $textboxWidthOpt.Size = New-Object System.Drawing.Size(45, 23); $textboxWidthOpt.Text = "1.0"; $textboxWidthOpt.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$labelHeight = New-Object System.Windows.Forms.Label; $labelHeight.Text = "H:"; $labelHeight.Location = New-Object System.Drawing.Point(170, 25); $labelHeight.AutoSize=$true; $textboxHeight = New-Object System.Windows.Forms.TextBox; $textboxHeight.Location = New-Object System.Drawing.Point(195, 22); $textboxHeight.Size = New-Object System.Drawing.Size(45, 23); $textboxHeight.Text = "1.0"; $textboxHeight.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$labelDimsUnit = New-Object System.Windows.Forms.Label; $labelDimsUnit.Text = "(inches)"; $labelDimsUnit.Location = New-Object System.Drawing.Point(250, 25); $labelDimsUnit.AutoSize=$true; $labelDimsUnit.ForeColor = $colorTextLight
-$labelDeclaredValue = New-Object System.Windows.Forms.Label; $labelDeclaredValue.Text = "Declared Val ($):"; $labelDeclaredValue.Location = New-Object System.Drawing.Point(310, 25); $labelDeclaredValue.AutoSize=$true; $textboxDeclaredValue = New-Object System.Windows.Forms.TextBox; $textboxDeclaredValue.Location = New-Object System.Drawing.Point(420, 22); $textboxDeclaredValue.Size = New-Object System.Drawing.Size(80, 23); $textboxDeclaredValue.Text = "0.00"; $textboxDeclaredValue.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$groupBoxOptional.Controls.AddRange(@($labelLength, $textboxLength, $labelWidthOpt, $textboxWidthOpt, $labelHeight, $textboxHeight, $labelDimsUnit, $labelDeclaredValue, $textboxDeclaredValue)); $currentRowY += $groupBoxOptional.Height + 15
-$buttonGetQuote = New-Object System.Windows.Forms.Button; $buttonGetQuote.Text = "Get Quote"; $buttonGetQuote.Size = New-Object System.Drawing.Size(110, 35); $buttonGetQuote.Location = New-Object System.Drawing.Point(($comboBoxSelectCustomer_Quote.Left + $comboBoxSelectCustomer_Quote.Width - $buttonGetQuote.Width), ($groupBoxOptional.Top + $groupBoxOptional.Height - $buttonGetQuote.Height)); $buttonGetQuote.Font = $fontBold; $buttonGetQuote.BackColor = $colorButtonBack; $buttonGetQuote.ForeColor = $colorButtonFore; $buttonGetQuote.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonGetQuote.FlatAppearance.BorderSize = 1; $buttonGetQuote.FlatAppearance.BorderColor = $colorButtonBorder
-$labelResults = New-Object System.Windows.Forms.Label; $labelResults.Text = "Quote Results:"; $labelResults.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelResults.Font = $fontBold; $labelResults.AutoSize = $true; $labelResults.ForeColor = $colorPrimary; $currentRowY += 25
+$labelDestState = New-Object System.Windows.Forms.Label; $labelDestState.Text = "State (2 Ltr):"; $labelDestState.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestState.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestState.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxDestState = New-Object System.Windows.Forms.TextBox; $textboxDestState.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxDestState.Size = New-Object System.Drawing.Size(50, 23); $textboxDestState.MaxLength = 2; $textboxDestState.CharacterCasing = [System.Windows.Forms.CharacterCasing]::Upper; $textboxDestState.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight + 10
+
+# --- Commodity Grid ---
+$labelCommodities = New-Object System.Windows.Forms.Label; $labelCommodities.Text = "Commodities:"; $labelCommodities.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelCommodities.Font = $fontBold; $labelCommodities.AutoSize = $true; $labelCommodities.ForeColor = $colorPrimary
+$currentRowY += 25
+
+$dataGridViewCommodities = New-Object System.Windows.Forms.DataGridView
+$dataGridViewCommodities.Location = New-Object System.Drawing.Point($col1X, $currentRowY)
+$dataGridViewCommodities.Size = New-Object System.Drawing.Size(720, 150) # Adjust size as needed
+$dataGridViewCommodities.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::AutoSize
+$dataGridViewCommodities.AllowUserToAddRows = $false # User clicks button to add
+$dataGridViewCommodities.AllowUserToDeleteRows = $false # User clicks button to delete
+$dataGridViewCommodities.EditMode = [System.Windows.Forms.DataGridViewEditMode]::EditOnEnter
+$dataGridViewCommodities.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+$dataGridViewCommodities.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+# Define Columns
+$colPieces = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colPieces.Name = "Pieces"; $colPieces.HeaderText = "Pcs"; $colPieces.Width = 40
+$colClass = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colClass.Name = "Class"; $colClass.HeaderText = "Class"; $colClass.Width = 50
+$colWeight = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colWeight.Name = "Weight"; $colWeight.HeaderText = "Weight (lbs)"; $colWeight.Width = 80
+$colLength = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colLength.Name = "Length"; $colLength.HeaderText = "L (in)"; $colLength.Width = 50
+$colWidth = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colWidth.Name = "Width"; $colWidth.HeaderText = "W (in)"; $colWidth.Width = 50
+$colHeight = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colHeight.Name = "Height"; $colHeight.HeaderText = "H (in)"; $colHeight.Width = 50
+$colDesc = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colDesc.Name = "Description"; $colDesc.HeaderText = "Description"; $colDesc.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
+$colStack = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn; $colStack.Name = "Stackable"; $colStack.HeaderText = "Stack"; $colStack.Width = 50; $colStack.TrueValue = 'Y'; $colStack.FalseValue = 'N'; $colStack.IndeterminateValue = 'N' # Treat indeterminate as No
+
+$dataGridViewCommodities.Columns.AddRange($colPieces, $colClass, $colWeight, $colLength, $colWidth, $colHeight, $colDesc, $colStack)
+$currentRowY += $dataGridViewCommodities.Height + 5
+
+# Add/Remove Buttons for Grid
+$buttonAddItem = New-Object System.Windows.Forms.Button; $buttonAddItem.Text = "Add Item"; $buttonAddItem.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $buttonAddItem.Size = New-Object System.Drawing.Size(90, 28); $buttonAddItem.Font = $fontRegular; $buttonAddItem.BackColor = $colorButtonBack; $buttonAddItem.ForeColor = $colorButtonFore; $buttonAddItem.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonAddItem.FlatAppearance.BorderSize = 1; $buttonAddItem.FlatAppearance.BorderColor = $colorButtonBorder
+$buttonRemoveItem = New-Object System.Windows.Forms.Button; $buttonRemoveItem.Text = "Remove Item"; $buttonRemoveItem.Location = New-Object System.Drawing.Point(($col1X + $buttonAddItem.Width + 10), $currentRowY); $buttonRemoveItem.Size = New-Object System.Drawing.Size(110, 28); $buttonRemoveItem.Font = $fontRegular; $buttonRemoveItem.BackColor = $colorButtonBack; $buttonRemoveItem.ForeColor = $colorButtonFore; $buttonRemoveItem.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonRemoveItem.FlatAppearance.BorderSize = 1; $buttonRemoveItem.FlatAppearance.BorderColor = $colorButtonBorder
+$currentRowY += $buttonAddItem.Height + 15
+
+# Get Quote Button
+$buttonGetQuote = New-Object System.Windows.Forms.Button; $buttonGetQuote.Text = "Get Quote"; $buttonGetQuote.Size = New-Object System.Drawing.Size(110, 35); $buttonGetQuote.Location = New-Object System.Drawing.Point(($singleQuotePanel.ClientSize.Width - $buttonGetQuote.Width - 20), ($currentRowY - $buttonGetQuote.Height - 10)); $buttonGetQuote.Font = $fontBold; $buttonGetQuote.BackColor = $colorButtonBack; $buttonGetQuote.ForeColor = $colorButtonFore; $buttonGetQuote.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat; $buttonGetQuote.FlatAppearance.BorderSize = 1; $buttonGetQuote.FlatAppearance.BorderColor = $colorButtonBorder; $buttonGetQuote.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+# Results Area
+$labelResults = New-Object System.Windows.Forms.Label; $labelResults.Text = "Quote Results:"; $labelResults.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelResults.Font = $fontBold; $labelResults.AutoSize = $true; $labelResults.ForeColor = $colorPrimary
+$currentRowY += 25
 $textboxResults = New-Object System.Windows.Forms.TextBox; $textboxResults.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $textboxResults.Size = New-Object System.Drawing.Size(($singleQuotePanel.ClientSize.Width - $col1X - 15), ($singleQuotePanel.ClientSize.Height - $currentRowY - 15)); $textboxResults.Multiline = $true; $textboxResults.ReadOnly = $true; $textboxResults.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical; $textboxResults.Font = $fontMono; $textboxResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right; $textboxResults.BackColor = $colorPanel; $textboxResults.ForeColor = $colorText
-$singleQuotePanel.Controls.AddRange(@( $labelSelectCustomer_Quote, $comboBoxSelectCustomer_Quote, $labelOriginHeader, $labelDestHeader, $labelOriginZip, $textboxOriginZip, $labelDestZip, $textboxDestZip, $labelOriginCity, $textboxOriginCity, $labelDestCity, $textboxDestCity, $labelOriginState, $textboxOriginState, $labelDestState, $textboxDestState, $labelWeight, $textboxWeight, $labelClass, $textboxClass, $groupBoxOptional, $buttonGetQuote, $labelResults, $textboxResults ))
+
+# Add Controls to Panel
+$singleQuotePanel.Controls.AddRange(@(
+    $labelSelectCustomer_Quote, $comboBoxSelectCustomer_Quote,
+    $labelOriginHeader, $labelDestHeader,
+    $labelOriginZip, $textboxOriginZip, $labelDestZip, $textboxDestZip,
+    $labelOriginCity, $textboxOriginCity, $labelDestCity, $textboxDestCity,
+    $labelOriginState, $textboxOriginState, $labelDestState, $textboxDestState,
+    $labelCommodities, $dataGridViewCommodities, $buttonAddItem, $buttonRemoveItem,
+    $buttonGetQuote,
+    $labelResults, $textboxResults
+))
 
 # ============================================================
 # Settings Tab UI
@@ -282,27 +343,113 @@ $customerChangedHandler = {
 }
 $comboBoxSelectCustomer_Quote.Add_SelectedIndexChanged($customerChangedHandler); $comboBoxSelectCustomer_Settings.Add_SelectedIndexChanged($customerChangedHandler); $comboBoxSelectCustomer_Reports.Add_SelectedIndexChanged($customerChangedHandler);
 
-# --- Quote Tab Event Handler ---
+# --- Quote Tab Handlers ---
+$buttonAddItem.Add_Click({
+    # Add a new row with default values
+    $dataGridViewCommodities.Rows.Add("1", "70", "100", "48", "40", "36", "Item Description", 'Y') | Out-Null
+})
+
+$buttonRemoveItem.Add_Click({
+    # Remove selected rows
+    # Iterate backwards to avoid index issues when removing multiple rows
+    for ($i = $dataGridViewCommodities.SelectedRows.Count - 1; $i -ge 0; $i--) {
+        $row = $dataGridViewCommodities.SelectedRows[$i]
+        if (-not $row.IsNewRow) { # Don't try to remove the 'new row' placeholder if visible
+            $dataGridViewCommodities.Rows.Remove($row)
+        }
+    }
+})
+
 $buttonGetQuote.Add_Click({
     param($sender, $e)
     if ($null -eq $script:selectedCustomerProfile) { [System.Windows.Forms.MessageBox]::Show("Please select a customer first.", "Customer Not Selected"); return };
     $textboxResults.Clear(); $textboxResults.Text = "Fetching rates for Customer: $($script:selectedCustomerProfile.CustomerName)..."; $mainForm.Refresh()
-    # Input Validation
-    $originZip = $textboxOriginZip.Text; $originCity = $textboxOriginCity.Text; $originState = $textboxOriginState.Text; $destZip = $textboxDestZip.Text; $destCity = $textboxDestCity.Text; $destState = $textboxDestState.Text; $weightInput = $textboxWeight.Text; $classInput = $textboxClass.Text; $lenInput = $textboxLength.Text; $widInput = $textboxWidthOpt.Text; $hgtInput = $textboxHeight.Text; $decValInput = $textboxDeclaredValue.Text; $validationErrors = [System.Collections.Generic.List[string]]::new(); if (!($originZip -match '^\d{5}$')){$validationErrors.Add("Origin ZIP.")}; if ([string]::IsNullOrWhiteSpace($originCity)){$validationErrors.Add("Origin City.")}; if (!($originState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Origin State.")}; if (!($destZip -match '^\d{5}$')){$validationErrors.Add("Dest ZIP.")}; if ([string]::IsNullOrWhiteSpace($destCity)){$validationErrors.Add("Dest City.")}; if (!($destState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Dest State.")}; $weight = $null; if ($weightInput -match '^\d+(\.\d+)?$' -and ([decimal]$weightInput -gt 0)){$weight=[decimal]$weightInput}else{$validationErrors.Add("Weight.")}; $freightClass = $null; if ($classInput -match '^\d+(\.\d+)?$' -and ([double]$classInput -ge 50 -and [double]$classInput -le 500)){$freightClass=$classInput}else{$validationErrors.Add("Class.")}; $itemLength=1.0; if(![string]::IsNullOrWhiteSpace($lenInput)){if($lenInput -match '^\d+(\.\d+)?$') {$itemLength=[float]$lenInput}else{$validationErrors.Add("Length.")}}; $itemWidth=1.0; if(![string]::IsNullOrWhiteSpace($widInput)){if($widInput -match '^\d+(\.\d+)?$') {$itemWidth=[float]$widInput}else{$validationErrors.Add("Width.")}}; $itemHeight=1.0; if(![string]::IsNullOrWhiteSpace($hgtInput)){if($hgtInput -match '^\d+(\.\d+)?$') {$itemHeight=[float]$hgtInput}else{$validationErrors.Add("Height.")}}; $declaredValue=0.0; if(![string]::IsNullOrWhiteSpace($decValInput)){if($decValInput -match '^\d+(\.\d+)?$') {$declaredValue=[decimal]$decValInput}else{$validationErrors.Add("Declared Value.")}};
+
+    # --- Input Validation (Origin/Destination) ---
+    $originZip = $textboxOriginZip.Text; $originCity = $textboxOriginCity.Text; $originState = $textboxOriginState.Text; $destZip = $textboxDestZip.Text; $destCity = $textboxDestCity.Text; $destState = $textboxDestState.Text;
+    $validationErrors = [System.Collections.Generic.List[string]]::new();
+    if (!($originZip -match '^\d{5}$')){$validationErrors.Add("Origin ZIP.")}; if ([string]::IsNullOrWhiteSpace($originCity)){$validationErrors.Add("Origin City.")}; if (!($originState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Origin State.")};
+    if (!($destZip -match '^\d{5}$')){$validationErrors.Add("Dest ZIP.")}; if ([string]::IsNullOrWhiteSpace($destCity)){$validationErrors.Add("Dest City.")}; if (!($destState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Dest State.")};
+
+    # --- Commodity Grid Validation and Data Collection ---
+    $commodities = @() # Array to hold validated commodity objects for API calls
+    $totalWeight = 0.0 # Calculate total weight for historical lookup if needed
+    $firstClass = $null # Get first class for historical lookup if needed
+
+    if ($dataGridViewCommodities.Rows.Count -eq 0) {
+        $validationErrors.Add("At least one commodity item is required.")
+    } else {
+        foreach ($row in $dataGridViewCommodities.Rows) {
+            if ($row.IsNewRow) { continue } # Skip the placeholder row if present
+
+            $rowNum = $row.Index + 1
+            $pcs = $row.Cells["Pieces"].Value
+            $cls = $row.Cells["Class"].Value
+            $wt = $row.Cells["Weight"].Value
+            $len = $row.Cells["Length"].Value
+            $wid = $row.Cells["Width"].Value
+            $hgt = $row.Cells["Height"].Value
+            $desc = $row.Cells["Description"].Value
+            $stack = $row.Cells["Stackable"].Value # This will be 'Y' or 'N' based on checkbox state
+
+            # Validate Row Data
+            $rowIsValid = $true
+            # <<< SYNTAX FIX: Enclose $rowNum in ${} >>>
+            if ($null -eq $pcs -or -not ($pcs -match '^\d+$') -or ([int]$pcs -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Pieces."); $rowIsValid = $false }
+            if ($null -eq $cls -or -not ($cls -match '^\d+(\.\d+)?$') -or ([double]$cls -lt 50) -or ([double]$cls -gt 500)) { $validationErrors.Add("Row ${rowNum}: Invalid Class."); $rowIsValid = $false }
+            if ($null -eq $wt -or -not ($wt -match '^\d+(\.\d+)?$') -or ([decimal]$wt -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Weight."); $rowIsValid = $false }
+            if ($null -eq $len -or -not ($len -match '^\d+(\.\d+)?$') -or ([decimal]$len -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Length."); $rowIsValid = $false }
+            if ($null -eq $wid -or -not ($wid -match '^\d+(\.\d+)?$') -or ([decimal]$wid -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Width."); $rowIsValid = $false }
+            if ($null -eq $hgt -or -not ($hgt -match '^\d+(\.\d+)?$') -or ([decimal]$hgt -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Height."); $rowIsValid = $false }
+            # <<< END SYNTAX FIX >>>
+            if ($null -eq $stack) { $stack = 'N' } # Default stackable if checkbox is somehow null
+
+            # If row is valid so far, create commodity object for API
+            if ($rowIsValid) {
+                 # <<< Explicitly cast to PSCustomObject >>>
+                 $commodities += [PSCustomObject]@{
+                    pieces         = [string]$pcs # API might expect string
+                    classification = [string]$cls # Used by SAIA/Averitt
+                    class          = [string]$cls # Used by R+L
+                    itemClass      = [string]$cls # Used by Central
+                    weight         = [string]$wt  # Most APIs seem to take string weight per item
+                    length         = [string]$len
+                    width          = [string]$wid
+                    height         = [string]$hgt
+                    description    = if ([string]::IsNullOrWhiteSpace($desc)) { "Commodity" } else { [string]$desc }
+                    packagingType  = "PAT" # Assuming Pallet for now, could be a grid column
+                    stackable      = if($stack -eq 'Y') {'Y'} else {'N'} # Ensure Y or N
+                }
+                # Accumulate total weight and get first class for historical lookup
+                $totalWeight += [decimal]$wt
+                if ($null -eq $firstClass) { $firstClass = [string]$cls }
+            }
+        } # End foreach row
+    } # End else (grid has rows)
+
+    # Check overall validation
     if ($validationErrors.Count -gt 0) { $errorMsg = "Invalid Input:`n$($validationErrors -join "`n")"; [System.Windows.Forms.MessageBox]::Show($errorMsg); $textboxResults.Text = $errorMsg; return };
-    # Prepare
-    $statusBar.Text = "Fetching rates..."; $optionalShipmentDetails=[PSCustomObject]@{OriginCity=$originCity;OriginState=$originState;DestinationCity=$destCity;DestinationState=$destState;ItemWidth=$itemLength;ItemHeight=$itemHeight;ItemLength=$itemWidth;DeclaredValue=$declaredValue;CustomerData=$null;QuoteType='Domestic'}; $resultsText=[System.Text.StringBuilder]::new(); $resultsText.AppendLine("="*20+" SHIPMENT QUOTE "+"="*20)|Out-Null; $resultsText.AppendLine("Quote Date: $(Get-Date)"); $resultsText.AppendLine("Broker User: $($script:currentUserProfile.Username)"); $resultsText.AppendLine("Customer:    $($script:selectedCustomerProfile.CustomerName)"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Origin:      $originCity, $originState $originZip"); $resultsText.AppendLine("Destination: $destCity, $destState $destZip"); $resultsText.AppendLine("Weight:      $($weight) lbs"); $resultsText.AppendLine("Class:       $($freightClass)"); if($itemLength -ne 1.0 -or $itemWidth -ne 1.0 -or $itemHeight -ne 1.0){$resultsText.AppendLine("Dimensions:  $itemLength""L x $itemWidth""W x $itemHeight""H")}; if($declaredValue -gt 0){$resultsText.AppendLine("Declared Val: $($declaredValue.ToString("C"))")}; $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Carrier Options:")|Out-Null;
+    if ($commodities.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("No valid commodity items entered."); $textboxResults.Text = "No valid items."; return };
+
+    # --- Prepare ---
+    $statusBar.Text = "Fetching rates...";
+    $declaredValue=0.0; # Declared value input removed, default to 0
+    $optionalShipmentDetails=[PSCustomObject]@{OriginCity=$originCity;OriginState=$originState;DestinationCity=$destCity;DestinationState=$destState; DeclaredValue=$declaredValue}; # Add other non-commodity details needed by APIs
+
+    $resultsText=[System.Text.StringBuilder]::new(); $resultsText.AppendLine("="*20+" SHIPMENT QUOTE "+"="*20)|Out-Null; $resultsText.AppendLine("Quote Date: $(Get-Date)"); $resultsText.AppendLine("Broker User: $($script:currentUserProfile.Username)"); $resultsText.AppendLine("Customer:    $($script:selectedCustomerProfile.CustomerName)"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Origin:      $originCity, $originState $originZip"); $resultsText.AppendLine("Destination: $destCity, $destState $destZip"); $resultsText.AppendLine("Commodities: $($commodities.Count) lines, Total Wt: $($totalWeight) lbs"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Carrier Options:")|Out-Null;
+
     # Get Permitted Keys
     $permittedCentralKeys=@{}; $permittedSAIAKeys=@{}; $permittedRLKeys=@{}; $permittedAverittKeys=@{}; try { $currentCustomerProfile = $script:selectedCustomerProfile; if(!$currentCustomerProfile){throw "Customer profile null."}; $permittedCentralKeys=Get-PermittedKeys -AllKeys $script:allCentralKeys -AllowedKeyNames $currentCustomerProfile.AllowedCentralKeys; $permittedSAIAKeys=Get-PermittedKeys -AllKeys $script:allSAIAKeys -AllowedKeyNames $currentCustomerProfile.AllowedSAIAKeys; $permittedRLKeys=Get-PermittedKeys -AllKeys $script:allRLKeys -AllowedKeyNames $currentCustomerProfile.AllowedRLKeys; $permittedAverittKeys=Get-PermittedKeys -AllKeys $script:allAverittKeys -AllowedKeyNames $currentCustomerProfile.AllowedAverittKeys } catch { [System.Windows.Forms.MessageBox]::Show("Error getting keys: $($_.Exception.Message)"); $textboxResults.Text = "Error getting keys."; return }
-    # Call APIs
+
+    # --- Call APIs ---
     $quoteTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'; $finalQuotes=@(); $CurrentVerbosePreference=$VerbosePreference; $VerbosePreference='SilentlyContinue';
     try {
         # Central
-        if ($permittedCentralKeys.Count -gt 0) { $textboxResults.AppendText("Querying Central...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedCentralKeys.Keys|Sort)){ try {$keyData=$permittedCentralKeys[$tariff]; if(!$keyData.accessCode -or !$keyData.customerNumber){throw "cred missing."}; $cost=Invoke-CentralTransportApi -ApiKey $keyData.accessCode -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -customerNumber $keyData.customerNumber; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  Central ($tariff): Err") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedCentralKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -Lowest $lowest.Cost -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Central", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Central' -Tariff $lowest.TariffName -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $lowest.Cost -Final $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Central: Price Calc Err")}}else{$resultsText.AppendLine("  Central: No Rates")}}else{$resultsText.AppendLine("  Central: No Keys")}
+        if ($permittedCentralKeys.Count -gt 0) { $textboxResults.AppendText("Querying Central...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedCentralKeys.Keys|Sort)){ try {$keyData=$permittedCentralKeys[$tariff]; if(!$keyData.accessCode -or !$keyData.customerNumber){throw "cred missing."}; $cost=Invoke-CentralTransportApi -ApiKeyData $keyData -OriginZip $originZip -DestinationZip $destZip -Commodities $commodities; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  Central ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedCentralKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Central", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Central' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Central: Price Calc Err")}}else{$resultsText.AppendLine("  Central: No Rates")}}else{$resultsText.AppendLine("  Central: No Keys")}
         # SAIA
-        if ($permittedSAIAKeys.Count -gt 0) { $textboxResults.AppendText("Querying SAIA...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedSAIAKeys.Keys|Sort)){ try {$keyData=$permittedSAIAKeys[$tariff]; $cost=Invoke-SAIAApi -OriginZip $originZip -DestZip $destZip -OriginCity $originCity -OriginState $originState -DestCity $destCity -DestState $destState -Weight $weight -Class $freightClass -KeyData $keyData; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  SAIA ($tariff): Err") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedSAIAKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -Lowest $lowest.Cost -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "SAIA", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'SAIA' -Tariff $lowest.TariffName -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $lowest.Cost -Final $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  SAIA: Price Calc Err")}}else{$resultsText.AppendLine("  SAIA: No Rates")}}else{$resultsText.AppendLine("  SAIA: No Keys")}
+        if ($permittedSAIAKeys.Count -gt 0) { $textboxResults.AppendText("Querying SAIA...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedSAIAKeys.Keys|Sort)){ try {$keyData=$permittedSAIAKeys[$tariff]; $cost=Invoke-SAIAApi -KeyData $keyData -OriginZip $originZip -DestinationZip $destZip -OriginCity $originCity -OriginState $originState -DestinationCity $destCity -DestinationState $destState -Details $commodities; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  SAIA ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedSAIAKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "SAIA", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'SAIA' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  SAIA: Price Calc Err")}}else{$resultsText.AppendLine("  SAIA: No Rates")}}else{$resultsText.AppendLine("  SAIA: No Keys")}
         # R+L
-        if ($permittedRLKeys.Count -gt 0) { $textboxResults.AppendText("Querying R+L...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedRLKeys.Keys|Sort)){ try {$keyData=$permittedRLKeys[$tariff]; if(!$keyData.APIKey){throw "cred missing."}; $cost=Invoke-RLApi -OriginZip $originZip -DestZip $destZip -Weight $weight -Class $freightClass -KeyData $keyData -ShipmentDetails $optionalShipmentDetails; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  R+L ($tariff): Err") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedRLKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -Lowest $lowest.Cost -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "R+L", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'R+L' -Tariff $lowest.TariffName -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $lowest.Cost -Final $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  R+L: Price Calc Err")}}else{$resultsText.AppendLine("  R+L: No Rates")}}else{$resultsText.AppendLine("  R+L: No Keys")}
+        if ($permittedRLKeys.Count -gt 0) { $textboxResults.AppendText("Querying R+L...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedRLKeys.Keys|Sort)){ try {$keyData=$permittedRLKeys[$tariff]; if(!$keyData.APIKey){throw "cred missing."}; $cost=Invoke-RLApi -KeyData $keyData -OriginZip $originZip -DestinationZip $destZip -Commodities $commodities -ShipmentDetails $optionalShipmentDetails; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  R+L ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedRLKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "R+L", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'R+L' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  R+L: Price Calc Err")}}else{$resultsText.AppendLine("  R+L: No Rates")}}else{$resultsText.AppendLine("  R+L: No Keys")}
         # Averitt
         if ($permittedAverittKeys.Count -gt 0) {
             $textboxResults.AppendText("Querying Averitt...`r`n"); $mainForm.Refresh();
@@ -311,12 +458,21 @@ $buttonGetQuote.Add_Click({
                 try {
                     $keyData=$permittedAverittKeys[$tariff];
                     if(!$keyData.APIKey){throw "cred missing."};
-                    $averittShipmentData=[PSCustomObject]@{OriginPostalCode=$originZip;DestinationPostalCode=$destZip;OriginCity=$originCity;OriginState=$originState;DestinationCity=$destCity;DestinationState=$destState;Commodity1_Weight = $weight; Commodity1_Class = $freightClass;}; # Simplified example
+                    # Construct detailed shipment data needed by Averitt API
+                    $averittShipmentData=[PSCustomObject]@{
+                        ServiceLevel = "STND"; PaymentTerms = "Prepaid"; PaymentPayer = "Shipper"; # Defaults
+                        PickupDate = (Get-Date -Format 'yyyyMMdd'); # Default
+                        OriginAccount = $null; OriginCity = $originCity; OriginStateProvince = $originState; OriginPostalCode = $originZip; OriginCountry = "USA"; # Assuming USA
+                        DestinationAccount = $null; DestinationCity = $destCity; DestinationStateProvince = $destState; DestinationPostalCode = $destZip; DestinationCountry = "USA"; # Assuming USA
+                        BillToAccount = $null; BillToName = "Default BillTo"; BillToAddress = "123 Default"; BillToCity = "Default"; BillToStateProvince = "TN"; BillToPostalCode = "00000"; BillToCountry = "USA"; # Defaults - Adjust if needed
+                        Commodities = $commodities; # Pass the collected array
+                        Accessorials = $null # Add logic if accessorials are needed
+                    };
                     if(Get-Command Invoke-AverittApi -EA SilentlyContinue){$cost=Invoke-AverittApi -KeyData $keyData -ShipmentData $averittShipmentData; if($cost){$rates[$tariff]=$cost}} else { throw "Invoke-AverittApi missing."}
                 } catch { $resultsText.AppendLine("  Averitt ($tariff): Err - $($_.Exception.Message)") }
             }; # End foreach tariff
             $lowest=Get-MinimumRate -RateResults $rates;
-            if($lowest){ $data=$permittedAverittKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -Lowest $lowest.Cost -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Averitt", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Averitt' -Tariff $lowest.TariffName -OriginZip $originZip -DestZip $destZip -Weight $weight -FreightClass $freightClass -LowestCost $lowest.Cost -Final $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Averitt: Price Calc Err")}}else{$resultsText.AppendLine("  Averitt: No Rates")}
+            if($lowest){ $data=$permittedAverittKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Averitt", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Averitt' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Averitt: Price Calc Err")}}else{$resultsText.AppendLine("  Averitt: No Rates")}
         } else { $resultsText.AppendLine("  Averitt: No Keys") }
     } finally { $VerbosePreference = $CurrentVerbosePreference }
     # Display Results
