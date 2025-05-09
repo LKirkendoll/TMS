@@ -4,6 +4,7 @@ GUI Front-end for the Transportation Management System Tool.
 Uses Windows Forms and leverages existing TMS PowerShell modules.
 Broker logs in (from user_accounts), then selects a customer (from customer_accounts) to work with.
 Includes Quote, Settings, and Reports tabs. Handles multiple commodity items.
+Integrates AAA Cooper Transportation.
 #>
 
 # --- Load Required Assemblies ---
@@ -31,31 +32,30 @@ try {
     $moduleFiles = @(
         "TMS_Config.ps1",
         "TMS_Helpers_General.ps1",
-        "TMS_GUI_Helpers.ps1", # <<< Ensure this uses the updated helpers
-        "TMS_Auth.ps1",        # <<< Ensure this uses the updated helpers
-        "TMS_Helpers_Central.ps1",  # <<< Needs latest version (multi-item)
-        "TMS_Helpers_SAIA.ps1",     # <<< Needs latest version (multi-item)
-        "TMS_Helpers_RL.ps1",       # <<< Needs latest version (multi-item)
-        "TMS_Helpers_Averitt.ps1",  # <<< Needs latest version (multi-item)
+        "TMS_GUI_Helpers.ps1",
+        "TMS_Auth.ps1",
+        "TMS_Helpers_Central.ps1",
+        "TMS_Helpers_SAIA.ps1",
+        "TMS_Helpers_RL.ps1",
+        "TMS_Helpers_Averitt.ps1",
+        "TMS_Helpers_AAACooper.ps1", # Added for AAA Cooper
         "TMS_Carrier_Central.ps1",
         "TMS_Carrier_SAIA.ps1",
         "TMS_Carrier_RL.ps1",
         "TMS_Carrier_Averitt.ps1",
+        "TMS_Carrier_AAACooper.ps1", # Added for AAA Cooper
         "TMS_Reports.ps1",
         "TMS_Settings.ps1"
     )
 
     foreach ($moduleFile in $moduleFiles) {
-        # Skip commented out lines if any were left
         if ($moduleFile.StartsWith('#')) { continue }
-
         $modulePath = Join-Path $script:scriptRoot $moduleFile
         Write-Verbose "Attempting to load module '$moduleFile' from '$modulePath'"
         if (-not (Test-Path $modulePath -PathType Leaf)) {
-             # If an Averitt helper/carrier file is optional and missing, just warn
-             if ($moduleFile -like "*Averitt*") {
-                 Write-Warning "Optional module not found: '$moduleFile'. Averitt functionality may be limited."
-                 continue # Skip to next file
+             if ($moduleFile -like "*Averitt*" -or $moduleFile -like "*AAACooper*") { # Allow optional carriers
+                 Write-Warning "Optional module not found: '$moduleFile'. Related functionality may be limited."
+                 continue
              } else {
                 throw "Required module not found: '$moduleFile' at '$modulePath'"
              }
@@ -68,11 +68,13 @@ try {
      if (-not (Get-Command Populate-TariffListBox -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-TariffListBox' not found."}
      if (-not (Get-Command Populate-ReportTariffListBoxes -ErrorAction SilentlyContinue)) { throw "Required function 'Populate-ReportTariffListBoxes' not found."}
      if (-not (Get-Command Update-TariffMargin -ErrorAction SilentlyContinue)) { throw "Required function 'Update-TariffMargin' not found."}
-     # Verify API helpers exist (allow Averitt to be missing)
+     # Verify API helpers exist (allow optional ones to be missing)
      if (-not (Get-Command Invoke-CentralTransportApi -EA SilentlyContinue)){throw "Invoke-CentralTransportApi missing."}
      if (-not (Get-Command Invoke-SAIAApi -EA SilentlyContinue)){throw "Invoke-SAIAApi missing."}
      if (-not (Get-Command Invoke-RLApi -EA SilentlyContinue)){throw "Invoke-RLApi missing."}
-     # if (-not (Get-Command Invoke-AverittApi -EA SilentlyContinue)){Write-Warning "Invoke-AverittApi missing. Averitt quotes disabled."} # Optional check
+     if (-not (Get-Command Invoke-AverittApi -EA SilentlyContinue)){Write-Warning "Invoke-AverittApi missing. Averitt quotes may be disabled."}
+     if (-not (Get-Command Invoke-AAACooperApi -EA SilentlyContinue)){Write-Warning "Invoke-AAACooperApi missing. AAA Cooper quotes may be disabled."}
+
 
     Write-Verbose "Module loading complete."
 } catch {
@@ -80,17 +82,32 @@ try {
 }
 
 # --- Resolve Full Paths for Data Folders ---
-$CentralKeysFolderName = $script:defaultCentralKeysFolderName; $SAIAKeysFolderName = $script:defaultSAIAKeysFolderName; $RLKeysFolderName = $script:defaultRLKeysFolderName; $AverittKeysFolderName = "keys_averitt"
-$UserAccountsFolderName = $script:defaultUserAccountsFolderName; $CustomerAccountsFolderName = $script:defaultCustomerAccountsFolderName
-$ReportsBaseFolderName = $script:defaultReportsBaseFolderName; $ShipmentDataFolderName = $script:defaultShipmentDataFolderName
-$script:centralKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $CentralKeysFolderName; $script:saiaKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $SAIAKeysFolderName; $script:rlKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $RLKeysFolderName; $script:averittKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $AverittKeysFolderName
-$script:userAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $UserAccountsFolderName; $script:customerAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $CustomerAccountsFolderName
-$script:reportsBaseFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $ReportsBaseFolderName; $script:shipmentDataFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $ShipmentDataFolderName
+$CentralKeysFolderName = $script:defaultCentralKeysFolderName
+$SAIAKeysFolderName = $script:defaultSAIAKeysFolderName
+$RLKeysFolderName = $script:defaultRLKeysFolderName
+$AverittKeysFolderName = $script:defaultAverittKeysFolderName # Ensure this uses config
+$AAACooperKeysFolderName = $script:defaultAAACooperKeysFolderName # Added for AAA Cooper
+
+$UserAccountsFolderName = $script:defaultUserAccountsFolderName
+$CustomerAccountsFolderName = $script:defaultCustomerAccountsFolderName
+$ReportsBaseFolderName = $script:defaultReportsBaseFolderName
+$ShipmentDataFolderName = $script:defaultShipmentDataFolderName
+
+$script:centralKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $CentralKeysFolderName
+$script:saiaKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $SAIAKeysFolderName
+$script:rlKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $RLKeysFolderName
+$script:averittKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $AverittKeysFolderName
+$script:aaaCooperKeysFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $AAACooperKeysFolderName # Added for AAA Cooper
+
+$script:userAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $UserAccountsFolderName
+$script:customerAccountsFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $CustomerAccountsFolderName
+$script:reportsBaseFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $ReportsBaseFolderName
+$script:shipmentDataFolderPath = Join-Path -Path $script:scriptRoot -ChildPath $ShipmentDataFolderName
 
 # --- Ensure Required Base Folders Exist ---
 Write-Verbose "Ensuring base data directories exist..."
 try {
-    @($script:centralKeysFolderPath, $script:saiaKeysFolderPath, $script:rlKeysFolderPath, $script:averittKeysFolderPath,
+    @($script:centralKeysFolderPath, $script:saiaKeysFolderPath, $script:rlKeysFolderPath, $script:averittKeysFolderPath, $script:aaaCooperKeysFolderPath, # Added AAA Cooper
       $script:userAccountsFolderPath, $script:customerAccountsFolderPath, $script:reportsBaseFolderPath, $script:shipmentDataFolderPath) | ForEach-Object { Ensure-DirectoryExists -Path $_ }
 }
 catch { $errorMessage = "FATAL: Failed to ensure required data directories exist.`nError: $($_.Exception.Message)"; Write-Error $errorMessage; [System.Windows.Forms.MessageBox]::Show($errorMessage, "Directory Error"); Exit 1 }
@@ -98,16 +115,22 @@ Write-Verbose "Base directory check complete."
 
 # --- Pre-load All Carrier Keys/Data ---
 Write-Verbose "Loading all available carrier keys/accounts/margins..."
-$script:allCentralKeys = @{}; $script:allSAIAKeys = @{}; $script:allRLKeys = @{}; $script:allAverittKeys = @{}
+$script:allCentralKeys = @{}; $script:allSAIAKeys = @{}; $script:allRLKeys = @{}; $script:allAverittKeys = @{}; $script:allAAACooperKeys = @{} # Added AAA Cooper
 try {
     $script:allCentralKeys = Load-KeysFromFolder -KeysFolderPath $script:centralKeysFolderPath -CarrierName "Central Transport"
     $script:allSAIAKeys = Load-KeysFromFolder -KeysFolderPath $script:saiaKeysFolderPath -CarrierName "SAIA"
     $script:allRLKeys = Load-KeysFromFolder -KeysFolderPath $script:rlKeysFolderPath -CarrierName "RL Carriers"
     $script:allAverittKeys = Load-KeysFromFolder -KeysFolderPath $script:averittKeysFolderPath -CarrierName "Averitt"
+    $script:allAAACooperKeys = Load-KeysFromFolder -KeysFolderPath $script:aaaCooperKeysFolderPath -CarrierName "AAACooper" # Added for AAA Cooper
 } catch {
     $loadErrorMsg = "ERROR during Load-KeysFromFolder: $($_.Exception.Message). Check paths."; Write-Error $loadErrorMsg
     [System.Windows.Forms.MessageBox]::Show($loadErrorMsg, "Key Loading Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-    $script:allCentralKeys = @{}; $script:allSAIAKeys = @{}; $script:allRLKeys = @{}; $script:allAverittKeys = @{}
+    # Initialize to empty if loading fails to prevent null reference errors later
+    $script:allCentralKeys = if($null -eq $script:allCentralKeys){@()}else{$script:allCentralKeys}
+    $script:allSAIAKeys = if($null -eq $script:allSAIAKeys){@()}else{$script:allSAIAKeys}
+    $script:allRLKeys = if($null -eq $script:allRLKeys){@()}else{$script:allRLKeys}
+    $script:allAverittKeys = if($null -eq $script:allAverittKeys){@()}else{$script:allAverittKeys}
+    $script:allAAACooperKeys = if($null -eq $script:allAAACooperKeys){@()}else{$script:allAAACooperKeys}
 }
 Write-Verbose "Key/Account/Margin loading complete."
 
@@ -174,8 +197,8 @@ $labelDestHeader = New-Object System.Windows.Forms.Label; $labelDestHeader.Text 
 $currentRowY += $rowHeight
 
 # ZIP Code Row
-$labelOriginZip = New-Object System.Windows.Forms.Label; $labelOriginZip.Text = "ZIP Code:"; $labelOriginZip.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxOriginZip = New-Object System.Windows.Forms.TextBox; $textboxOriginZip.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxOriginZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginZip.MaxLength = 5; $textboxOriginZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$labelDestZip = New-Object System.Windows.Forms.Label; $labelDestZip.Text = "ZIP Code:"; $labelDestZip.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxDestZip = New-Object System.Windows.Forms.TextBox; $textboxDestZip.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxDestZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxDestZip.MaxLength = 5; $textboxDestZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight
+$labelOriginZip = New-Object System.Windows.Forms.Label; $labelOriginZip.Text = "ZIP Code:"; $labelOriginZip.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxOriginZip = New-Object System.Windows.Forms.TextBox; $textboxOriginZip.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxOriginZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginZip.MaxLength = 6; $textboxOriginZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle # MaxLength 6 for US/CAN
+$labelDestZip = New-Object System.Windows.Forms.Label; $labelDestZip.Text = "ZIP Code:"; $labelDestZip.Location = New-Object System.Drawing.Point($col2X, $currentRowY); $labelDestZip.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelDestZip.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxDestZip = New-Object System.Windows.Forms.TextBox; $textboxDestZip.Location = New-Object System.Drawing.Point(($col2X + $labelWidth + 5), $currentRowY); $textboxDestZip.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxDestZip.MaxLength = 6; $textboxDestZip.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle; $currentRowY += $rowHeight
 
 # City Row
 $labelOriginCity = New-Object System.Windows.Forms.Label; $labelOriginCity.Text = "City:"; $labelOriginCity.Location = New-Object System.Drawing.Point($col1X, $currentRowY); $labelOriginCity.Size = New-Object System.Drawing.Size($labelWidth, 23); $labelOriginCity.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight; $textboxOriginCity = New-Object System.Windows.Forms.TextBox; $textboxOriginCity.Location = New-Object System.Drawing.Point(($col1X + $labelWidth + 5), $currentRowY); $textboxOriginCity.Size = New-Object System.Drawing.Size($textBoxWidth, 23); $textboxOriginCity.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
@@ -241,17 +264,18 @@ $singleQuotePanel.Controls.AddRange(@(
 # Settings Tab UI
 # ============================================================
 $settingsPanel = New-Object System.Windows.Forms.Panel; $settingsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill; $settingsPanel.BackColor = $colorPanel; $tabPageSettings.Controls.Add($settingsPanel)
-$labelSelectCustomer_Settings = New-Object System.Windows.Forms.Label; $labelSelectCustomer_Settings.Text = "Select Customer:"; $labelSelectCustomer_Settings.Location = New-Object System.Drawing.Point(380, 15); $labelSelectCustomer_Settings.AutoSize = $true; $labelSelectCustomer_Settings.Font = $fontBold; $labelSelectCustomer_Settings.ForeColor = $colorText
-$comboBoxSelectCustomer_Settings = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Settings.Location = New-Object System.Drawing.Point(380, 35); $comboBoxSelectCustomer_Settings.Size = New-Object System.Drawing.Size(250, 23); $comboBoxSelectCustomer_Settings.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Settings.Enabled = $false; $comboBoxSelectCustomer_Settings.Font = $fontRegular
-$groupBoxCarrierSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxCarrierSelect.Text = "Select Carrier"; $groupBoxCarrierSelect.Location = New-Object System.Drawing.Point(15, 15); $groupBoxCarrierSelect.Size = New-Object System.Drawing.Size(350, 55); $groupBoxCarrierSelect.Font = $fontRegular; $groupBoxCarrierSelect.ForeColor = $colorText
+$labelSelectCustomer_Settings = New-Object System.Windows.Forms.Label; $labelSelectCustomer_Settings.Text = "Select Customer:"; $labelSelectCustomer_Settings.Location = New-Object System.Drawing.Point(460, 15); $labelSelectCustomer_Settings.AutoSize = $true; $labelSelectCustomer_Settings.Font = $fontBold; $labelSelectCustomer_Settings.ForeColor = $colorText # Adjusted X for wider groupbox
+$comboBoxSelectCustomer_Settings = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Settings.Location = New-Object System.Drawing.Point(460, 35); $comboBoxSelectCustomer_Settings.Size = New-Object System.Drawing.Size(250, 23); $comboBoxSelectCustomer_Settings.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Settings.Enabled = $false; $comboBoxSelectCustomer_Settings.Font = $fontRegular
+$groupBoxCarrierSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxCarrierSelect.Text = "Select Carrier"; $groupBoxCarrierSelect.Location = New-Object System.Drawing.Point(15, 15); $groupBoxCarrierSelect.Size = New-Object System.Drawing.Size(430, 55); $groupBoxCarrierSelect.Font = $fontRegular; $groupBoxCarrierSelect.ForeColor = $colorText # Increased width
 $radioCentral = New-Object System.Windows.Forms.RadioButton; $radioCentral.Text = "Central"; $radioCentral.Location = New-Object System.Drawing.Point(15, 22); $radioCentral.AutoSize = $true; $radioCentral.Checked = $true; $radioCentral.Font = $fontRegular; $radioCentral.ForeColor = $colorText
-$radioSAIA = New-Object System.Windows.Forms.RadioButton; $radioSAIA.Text = "SAIA"; $radioSAIA.Location = New-Object System.Drawing.Point(100, 22); $radioSAIA.AutoSize = $true; $radioSAIA.Font = $fontRegular; $radioSAIA.ForeColor = $colorText
-$radioRL = New-Object System.Windows.Forms.RadioButton; $radioRL.Text = "R+L"; $radioRL.Location = New-Object System.Drawing.Point(180, 22); $radioRL.AutoSize = $true; $radioRL.Font = $fontRegular; $radioRL.ForeColor = $colorText
-$radioAveritt = New-Object System.Windows.Forms.RadioButton; $radioAveritt.Text = "Averitt"; $radioAveritt.Location = New-Object System.Drawing.Point(260, 22); $radioAveritt.AutoSize = $true; $radioAveritt.Font = $fontRegular; $radioAveritt.ForeColor = $colorText
-$groupBoxCarrierSelect.Controls.AddRange(@($radioCentral, $radioSAIA, $radioRL, $radioAveritt))
+$radioSAIA = New-Object System.Windows.Forms.RadioButton; $radioSAIA.Text = "SAIA"; $radioSAIA.Location = New-Object System.Drawing.Point(90, 22); $radioSAIA.AutoSize = $true; $radioSAIA.Font = $fontRegular; $radioSAIA.ForeColor = $colorText # Adjusted X
+$radioRL = New-Object System.Windows.Forms.RadioButton; $radioRL.Text = "R+L"; $radioRL.Location = New-Object System.Drawing.Point(160, 22); $radioRL.AutoSize = $true; $radioRL.Font = $fontRegular; $radioRL.ForeColor = $colorText # Adjusted X
+$radioAveritt = New-Object System.Windows.Forms.RadioButton; $radioAveritt.Text = "Averitt"; $radioAveritt.Location = New-Object System.Drawing.Point(230, 22); $radioAveritt.AutoSize = $true; $radioAveritt.Font = $fontRegular; $radioAveritt.ForeColor = $colorText # Adjusted X
+$radioAAACooper = New-Object System.Windows.Forms.RadioButton; $radioAAACooper.Text = "AAA Cooper"; $radioAAACooper.Location = New-Object System.Drawing.Point(310, 22); $radioAAACooper.AutoSize = $true; $radioAAACooper.Font = $fontRegular; $radioAAACooper.ForeColor = $colorText # Added AAA Cooper
+$groupBoxCarrierSelect.Controls.AddRange(@($radioCentral, $radioSAIA, $radioRL, $radioAveritt, $radioAAACooper))
 $labelTariffList = New-Object System.Windows.Forms.Label; $labelTariffList.Text = "Permitted Tariffs && Margins (for Selected Customer):"; $labelTariffList.Location = New-Object System.Drawing.Point(15, 80); $labelTariffList.AutoSize = $true; $labelTariffList.Font = $fontBold; $labelTariffList.ForeColor = $colorPrimary
 $listBoxTariffs = New-Object System.Windows.Forms.ListBox; $listBoxTariffs.Location = New-Object System.Drawing.Point(15, 105); $listBoxTariffs.Size = New-Object System.Drawing.Size(350, 220); $listBoxTariffs.Font = $fontMono; $listBoxTariffs.IntegralHeight = $false; $listBoxTariffs.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$groupBoxSetMargin = New-Object System.Windows.Forms.GroupBox; $groupBoxSetMargin.Text = "Set Margin for Selected Tariff"; $groupBoxSetMargin.Location = New-Object System.Drawing.Point(380, 100); $groupBoxSetMargin.Size = New-Object System.Drawing.Size(250, 130); $groupBoxSetMargin.Font = $fontRegular; $groupBoxSetMargin.ForeColor = $colorText
+$groupBoxSetMargin = New-Object System.Windows.Forms.GroupBox; $groupBoxSetMargin.Text = "Set Margin for Selected Tariff"; $groupBoxSetMargin.Location = New-Object System.Drawing.Point(380, 100); $groupBoxSetMargin.Size = New-Object System.Drawing.Size(330, 130); $groupBoxSetMargin.Font = $fontRegular; $groupBoxSetMargin.ForeColor = $colorText # Increased width for longer tariff names
 $labelSelectedTariff = New-Object System.Windows.Forms.Label; $labelSelectedTariff.Text = "Selected: (None)"; $labelSelectedTariff.Location = New-Object System.Drawing.Point(15, 28); $labelSelectedTariff.AutoSize = $true; $labelSelectedTariff.MaximumSize = New-Object System.Drawing.Size(($groupBoxSetMargin.Width - 30), 0); $labelSelectedTariff.Font = $fontBold; $labelSelectedTariff.ForeColor = $colorText
 $labelNewMargin = New-Object System.Windows.Forms.Label; $labelNewMargin.Text = "New Margin %:"; $labelNewMargin.Location = New-Object System.Drawing.Point(15, 60); $labelNewMargin.AutoSize = $true; $labelNewMargin.ForeColor = $colorText
 $textBoxNewMargin = New-Object System.Windows.Forms.TextBox; $textBoxNewMargin.Location = New-Object System.Drawing.Point(120, 57); $textBoxNewMargin.Size = New-Object System.Drawing.Size(70, 23); $textBoxNewMargin.Enabled = $false; $textBoxNewMargin.Font = $fontRegular; $textBoxNewMargin.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
@@ -268,12 +292,13 @@ $labelSelectCustomer_Reports = New-Object System.Windows.Forms.Label; $labelSele
 $comboBoxSelectCustomer_Reports = New-Object System.Windows.Forms.ComboBox; $comboBoxSelectCustomer_Reports.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + 5), ($currentY - 3)); $comboBoxSelectCustomer_Reports.Size = New-Object System.Drawing.Size($reportsInputWidth, 23); $comboBoxSelectCustomer_Reports.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxSelectCustomer_Reports.Enabled = $false; $comboBoxSelectCustomer_Reports.Font = $fontRegular; $currentY += $reportsControlSpacing
 $labelReportType = New-Object System.Windows.Forms.Label; $labelReportType.Text = "Select Report Type:"; $labelReportType.Location = New-Object System.Drawing.Point($reportsPanelX, $currentY); $labelReportType.AutoSize = $true; $labelReportType.Font = $fontBold; $labelReportType.ForeColor = $colorText
 $comboBoxReportType = New-Object System.Windows.Forms.ComboBox; $comboBoxReportType.Location = New-Object System.Drawing.Point(($reportsPanelX + $reportsLabelWidth + 5), ($currentY - 3)); $comboBoxReportType.Size = New-Object System.Drawing.Size($reportsInputWidth, 23); $comboBoxReportType.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList; $comboBoxReportType.Enabled = $false; $comboBoxReportType.Font = $fontRegular; $comboBoxReportType.Items.AddRange(@( "Carrier Comparison", "Avg Required Margin", "Required Margin for ASP", "Cross-Carrier ASP Analysis", "Margins by History" )); $currentY += $reportsControlSpacing
-$groupBoxReportCarrierSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxReportCarrierSelect.Text = "Select Carrier"; $groupBoxReportCarrierSelect.Size = New-Object System.Drawing.Size(350, 55); $groupBoxReportCarrierSelect.Font = $fontRegular; $groupBoxReportCarrierSelect.ForeColor = $colorText; $groupBoxReportCarrierSelect.Visible = $false
+$groupBoxReportCarrierSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxReportCarrierSelect.Text = "Select Carrier"; $groupBoxReportCarrierSelect.Size = New-Object System.Drawing.Size(430, 55); $groupBoxReportCarrierSelect.Font = $fontRegular; $groupBoxReportCarrierSelect.ForeColor = $colorText; $groupBoxReportCarrierSelect.Visible = $false # Increased width
 $radioReportCentral = New-Object System.Windows.Forms.RadioButton; $radioReportCentral.Text = "Central"; $radioReportCentral.Location = New-Object System.Drawing.Point(15, 22); $radioReportCentral.AutoSize = $true; $radioReportCentral.Checked = $true; $radioReportCentral.Font = $fontRegular; $radioReportCentral.ForeColor = $colorText
-$radioReportSAIA = New-Object System.Windows.Forms.RadioButton; $radioReportSAIA.Text = "SAIA"; $radioReportSAIA.Location = New-Object System.Drawing.Point(100, 22); $radioReportSAIA.AutoSize = $true; $radioReportSAIA.Font = $fontRegular; $radioReportSAIA.ForeColor = $colorText
-$radioReportRL = New-Object System.Windows.Forms.RadioButton; $radioReportRL.Text = "R+L"; $radioReportRL.Location = New-Object System.Drawing.Point(180, 22); $radioReportRL.AutoSize = $true; $radioReportRL.Font = $fontRegular; $radioReportRL.ForeColor = $colorText
-$radioReportAveritt = New-Object System.Windows.Forms.RadioButton; $radioReportAveritt.Text = "Averitt"; $radioReportAveritt.Location = New-Object System.Drawing.Point(260, 22); $radioReportAveritt.AutoSize = $true; $radioReportAveritt.Font = $fontRegular; $radioReportAveritt.ForeColor = $colorText
-$groupBoxReportCarrierSelect.Controls.AddRange(@($radioReportCentral, $radioReportSAIA, $radioReportRL, $radioReportAveritt))
+$radioReportSAIA = New-Object System.Windows.Forms.RadioButton; $radioReportSAIA.Text = "SAIA"; $radioReportSAIA.Location = New-Object System.Drawing.Point(90, 22); $radioReportSAIA.AutoSize = $true; $radioReportSAIA.Font = $fontRegular; $radioReportSAIA.ForeColor = $colorText # Adjusted X
+$radioReportRL = New-Object System.Windows.Forms.RadioButton; $radioReportRL.Text = "R+L"; $radioReportRL.Location = New-Object System.Drawing.Point(160, 22); $radioReportRL.AutoSize = $true; $radioReportRL.Font = $fontRegular; $radioReportRL.ForeColor = $colorText # Adjusted X
+$radioReportAveritt = New-Object System.Windows.Forms.RadioButton; $radioReportAveritt.Text = "Averitt"; $radioReportAveritt.Location = New-Object System.Drawing.Point(230, 22); $radioReportAveritt.AutoSize = $true; $radioReportAveritt.Font = $fontRegular; $radioReportAveritt.ForeColor = $colorText # Adjusted X
+$radioReportAAACooper = New-Object System.Windows.Forms.RadioButton; $radioReportAAACooper.Text = "AAA Cooper"; $radioReportAAACooper.Location = New-Object System.Drawing.Point(310, 22); $radioReportAAACooper.AutoSize = $true; $radioReportAAACooper.Font = $fontRegular; $radioReportAAACooper.ForeColor = $colorText # Added AAA Cooper
+$groupBoxReportCarrierSelect.Controls.AddRange(@($radioReportCentral, $radioReportSAIA, $radioReportRL, $radioReportAveritt, $radioReportAAACooper))
 $groupBoxReportTariffSelect = New-Object System.Windows.Forms.GroupBox; $groupBoxReportTariffSelect.Text = "Select Tariff(s)"; $groupBoxReportTariffSelect.Size = New-Object System.Drawing.Size(550, ($reportsListBoxHeight + 40)); $groupBoxReportTariffSelect.Font = $fontRegular; $groupBoxReportTariffSelect.ForeColor = $colorText; $groupBoxReportTariffSelect.Visible = $false
 $labelReportTariff1 = New-Object System.Windows.Forms.Label; $labelReportTariff1.Text = "Tariff 1 (Base/Cost):"; $labelReportTariff1.Location = New-Object System.Drawing.Point(10, 25); $labelReportTariff1.AutoSize = $true; $labelReportTariff1.Font = $fontBold; $labelReportTariff1.ForeColor = $colorText
 $listBoxReportTariff1 = New-Object System.Windows.Forms.ListBox; $listBoxReportTariff1.Location = New-Object System.Drawing.Point(10, 45); $listBoxReportTariff1.Size = New-Object System.Drawing.Size($reportsListBoxWidth, $reportsListBoxHeight); $listBoxReportTariff1.Font = $fontMono; $listBoxReportTariff1.IntegralHeight = $false; $listBoxReportTariff1.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
@@ -321,7 +346,7 @@ $buttonLogin.Add_Click({
         }
         $script:currentUserReportsFolder = Join-Path $script:reportsBaseFolderPath $script:currentUserProfile.Username; Ensure-DirectoryExists $script:currentUserReportsFolder
         if ($null -ne $initialCustomerName) {
-            $initialCarrier = "Central"; if ($radioSAIA.Checked){$initialCarrier="SAIA"} elseif ($radioRL.Checked){$initialCarrier="RL"} elseif ($radioAveritt.Checked){$initialCarrier="Averitt"}
+            $initialCarrier = "Central"; if ($radioSAIA.Checked){$initialCarrier="SAIA"} elseif ($radioRL.Checked){$initialCarrier="RL"} elseif ($radioAveritt.Checked){$initialCarrier="Averitt"} elseif ($radioAAACooper.Checked){$initialCarrier="AAACooper"}
             try { Populate-TariffListBox -SelectedCarrier $initialCarrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $initialCustomerName -AllCustomerProfiles $script:allCustomerProfiles } catch { $statusBar.Text = "Error init settings: $($_.Exception.Message)" }
         } else { $listBoxTariffs.Items.Clear(); $listBoxTariffs.Items.Add("No Customers") }
         $comboBoxReportType.Enabled = $true; $buttonSelectCsv.Enabled = $true; $buttonRunReport.Enabled = $true
@@ -337,7 +362,10 @@ $customerChangedHandler = {
         $script:selectedCustomerProfile = $script:allCustomerProfiles[$selectedName] # Update for Quote tab direct use
         $statusBar.Text = "Selected Customer: $selectedName"
         $comboBoxes = @($comboBoxSelectCustomer_Quote, $comboBoxSelectCustomer_Settings, $comboBoxSelectCustomer_Reports); foreach($cb in $comboBoxes){ if($cb -ne $sender -and $cb.SelectedItem -ne $selectedName){ try {$cb.SelectedItem = $selectedName} catch {} } }
-        if ($tabControlMain.SelectedTab -eq $tabPageSettings) { $carrier = "Central"; if ($radioSAIA.Checked){$carrier="SAIA"} elseif ($radioRL.Checked){$carrier="RL"} elseif ($radioAveritt.Checked){$carrier="Averitt"}; try { Populate-TariffListBox -SelectedCarrier $carrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $selectedName -AllCustomerProfiles $script:allCustomerProfiles } catch { $statusBar.Text = "Error refresh settings: $($_.Exception.Message)" } }
+        if ($tabControlMain.SelectedTab -eq $tabPageSettings) {
+            $carrier="Central"; if ($radioSAIA.Checked){$carrier="SAIA"} elseif ($radioRL.Checked){$carrier="RL"} elseif ($radioAveritt.Checked){$carrier="Averitt"} elseif ($radioAAACooper.Checked){$carrier="AAACooper"}
+            try { Populate-TariffListBox -SelectedCarrier $carrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $selectedName -AllCustomerProfiles $script:allCustomerProfiles } catch { $statusBar.Text = "Error refresh settings: $($_.Exception.Message)" }
+        }
         if ($tabControlMain.SelectedTab -eq $tabPageReports) { try { $comboBoxReportType_SelectedIndexChanged_ScriptBlock.Invoke($comboBoxReportType, [System.EventArgs]::Empty) } catch { $statusBar.Text = "Error refresh reports: $($_.Exception.Message)" } }
     } else { $script:selectedCustomerProfile = $null; $statusBar.Text = "No valid customer selected."; $listBoxTariffs.Items.Clear(); $listBoxTariffs.Items.Add("Select Customer"); $listBoxReportTariff1.Items.Clear(); $listBoxReportTariff1.Items.Add("Select Customer"); $listBoxReportTariff2.Items.Clear(); $listBoxReportTariff2.Items.Add("Select Customer"); $labelSelectedTariff.Text = "Selected: (None)"; $buttonSetMargin.Enabled = $false; $textBoxNewMargin.Enabled = $false; $textBoxNewMargin.Clear() }
 }
@@ -368,11 +396,11 @@ $buttonGetQuote.Add_Click({
     # --- Input Validation (Origin/Destination) ---
     $originZip = $textboxOriginZip.Text; $originCity = $textboxOriginCity.Text; $originState = $textboxOriginState.Text; $destZip = $textboxDestZip.Text; $destCity = $textboxDestCity.Text; $destState = $textboxDestState.Text;
     $validationErrors = [System.Collections.Generic.List[string]]::new();
-    if (!($originZip -match '^\d{5}$')){$validationErrors.Add("Origin ZIP.")}; if ([string]::IsNullOrWhiteSpace($originCity)){$validationErrors.Add("Origin City.")}; if (!($originState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Origin State.")};
-    if (!($destZip -match '^\d{5}$')){$validationErrors.Add("Dest ZIP.")}; if ([string]::IsNullOrWhiteSpace($destCity)){$validationErrors.Add("Dest City.")}; if (!($destState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Dest State.")};
+    if (!($originZip -match '^\d{5,6}$')){$validationErrors.Add("Origin ZIP (5 or 6 digits).")}; if ([string]::IsNullOrWhiteSpace($originCity)){$validationErrors.Add("Origin City.")}; if (!($originState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Origin State.")};
+    if (!($destZip -match '^\d{5,6}$')){$validationErrors.Add("Dest ZIP (5 or 6 digits).")}; if ([string]::IsNullOrWhiteSpace($destCity)){$validationErrors.Add("Dest City.")}; if (!($destState -match '^[A-Za-z]{2}$')){$validationErrors.Add("Dest State.")};
 
     # --- Commodity Grid Validation and Data Collection ---
-    $commodities = @() # Array to hold validated commodity objects for API calls
+    $commoditiesForApi = @() # Array to hold validated commodity objects for API calls
     $totalWeight = 0.0 # Calculate total weight for historical lookup if needed
     $firstClass = $null # Get first class for historical lookup if needed
 
@@ -394,33 +422,36 @@ $buttonGetQuote.Add_Click({
 
             # Validate Row Data
             $rowIsValid = $true
-            # <<< SYNTAX FIX: Enclose $rowNum in ${} >>>
             if ($null -eq $pcs -or -not ($pcs -match '^\d+$') -or ([int]$pcs -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Pieces."); $rowIsValid = $false }
-            if ($null -eq $cls -or -not ($cls -match '^\d+(\.\d+)?$') -or ([double]$cls -lt 50) -or ([double]$cls -gt 500)) { $validationErrors.Add("Row ${rowNum}: Invalid Class."); $rowIsValid = $false }
+            if ($null -eq $cls -or -not ($cls -match '^\d+(\.\d+)?$') -or ([double]$cls -lt 1) -or ([double]$cls -gt 500)) { $validationErrors.Add("Row ${rowNum}: Invalid Class."); $rowIsValid = $false } # Class can be decimal for some
             if ($null -eq $wt -or -not ($wt -match '^\d+(\.\d+)?$') -or ([decimal]$wt -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Weight."); $rowIsValid = $false }
             if ($null -eq $len -or -not ($len -match '^\d+(\.\d+)?$') -or ([decimal]$len -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Length."); $rowIsValid = $false }
             if ($null -eq $wid -or -not ($wid -match '^\d+(\.\d+)?$') -or ([decimal]$wid -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Width."); $rowIsValid = $false }
             if ($null -eq $hgt -or -not ($hgt -match '^\d+(\.\d+)?$') -or ([decimal]$hgt -le 0)) { $validationErrors.Add("Row ${rowNum}: Invalid Height."); $rowIsValid = $false }
-            # <<< END SYNTAX FIX >>>
             if ($null -eq $stack) { $stack = 'N' } # Default stackable if checkbox is somehow null
 
             # If row is valid so far, create commodity object for API
             if ($rowIsValid) {
-                 # <<< Explicitly cast to PSCustomObject >>>
-                 $commodities += [PSCustomObject]@{
-                    pieces         = [string]$pcs # API might expect string
-                    classification = [string]$cls # Used by SAIA/Averitt
+                 $commoditiesForApi += [PSCustomObject]@{
+                    pieces         = [string]$pcs
+                    classification = [string]$cls # Used by SAIA/Averitt/AAACooper
                     class          = [string]$cls # Used by R+L
                     itemClass      = [string]$cls # Used by Central
-                    weight         = [string]$wt  # Most APIs seem to take string weight per item
+                    weight         = [string]$wt
                     length         = [string]$len
                     width          = [string]$wid
                     height         = [string]$hgt
                     description    = if ([string]::IsNullOrWhiteSpace($desc)) { "Commodity" } else { [string]$desc }
                     packagingType  = "PAT" # Assuming Pallet for now, could be a grid column
                     stackable      = if($stack -eq 'Y') {'Y'} else {'N'} # Ensure Y or N
+                    # AAA Cooper specific fields (can be null if not applicable)
+                    NMFC = $null # Placeholder, add if you have a column for NMFC
+                    NMFCSub = $null # Placeholder
+                    HandlingUnits = [string]$pcs # AAA Cooper uses HandlingUnits
+                    HandlingUnitType = "Pallets" # Default for AAA Cooper, or from grid
+                    HazMat = $null # Placeholder, or from grid ('X' if hazmat)
+                    CubeUnit = "IN" # For AAA Cooper if dims are provided
                 }
-                # Accumulate total weight and get first class for historical lookup
                 $totalWeight += [decimal]$wt
                 if ($null -eq $firstClass) { $firstClass = [string]$cls }
             }
@@ -429,70 +460,212 @@ $buttonGetQuote.Add_Click({
 
     # Check overall validation
     if ($validationErrors.Count -gt 0) { $errorMsg = "Invalid Input:`n$($validationErrors -join "`n")"; [System.Windows.Forms.MessageBox]::Show($errorMsg); $textboxResults.Text = $errorMsg; return };
-    if ($commodities.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("No valid commodity items entered."); $textboxResults.Text = "No valid items."; return };
+    if ($commoditiesForApi.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("No valid commodity items entered."); $textboxResults.Text = "No valid items."; return };
 
     # --- Prepare ---
     $statusBar.Text = "Fetching rates...";
     $declaredValue=0.0; # Declared value input removed, default to 0
-    $optionalShipmentDetails=[PSCustomObject]@{OriginCity=$originCity;OriginState=$originState;DestinationCity=$destCity;DestinationState=$destState; DeclaredValue=$declaredValue}; # Add other non-commodity details needed by APIs
+    $optionalShipmentDetails=[PSCustomObject]@{OriginCity=$originCity;OriginState=$originState;DestinationCity=$destCity;DestinationState=$destState; DeclaredValue=$declaredValue; OriginCountryCode="USA"; DestinationCountryCode="USA"}; # Add other non-commodity details needed by APIs
 
-    $resultsText=[System.Text.StringBuilder]::new(); $resultsText.AppendLine("="*20+" SHIPMENT QUOTE "+"="*20)|Out-Null; $resultsText.AppendLine("Quote Date: $(Get-Date)"); $resultsText.AppendLine("Broker User: $($script:currentUserProfile.Username)"); $resultsText.AppendLine("Customer:    $($script:selectedCustomerProfile.CustomerName)"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Origin:      $originCity, $originState $originZip"); $resultsText.AppendLine("Destination: $destCity, $destState $destZip"); $resultsText.AppendLine("Commodities: $($commodities.Count) lines, Total Wt: $($totalWeight) lbs"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Carrier Options:")|Out-Null;
+    $resultsText=[System.Text.StringBuilder]::new(); $resultsText.AppendLine("="*20+" SHIPMENT QUOTE "+"="*20)|Out-Null; $resultsText.AppendLine("Quote Date: $(Get-Date)"); $resultsText.AppendLine("Broker User: $($script:currentUserProfile.Username)"); $resultsText.AppendLine("Customer:    $($script:selectedCustomerProfile.CustomerName)"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Origin:      $originCity, $originState $originZip"); $resultsText.AppendLine("Destination: $destCity, $destState $destZip"); $resultsText.AppendLine("Commodities: $($commoditiesForApi.Count) lines, Total Wt: $($totalWeight) lbs"); $resultsText.AppendLine("-"*58)|Out-Null; $resultsText.AppendLine("Carrier Options:")|Out-Null;
 
     # Get Permitted Keys
-    $permittedCentralKeys=@{}; $permittedSAIAKeys=@{}; $permittedRLKeys=@{}; $permittedAverittKeys=@{}; try { $currentCustomerProfile = $script:selectedCustomerProfile; if(!$currentCustomerProfile){throw "Customer profile null."}; $permittedCentralKeys=Get-PermittedKeys -AllKeys $script:allCentralKeys -AllowedKeyNames $currentCustomerProfile.AllowedCentralKeys; $permittedSAIAKeys=Get-PermittedKeys -AllKeys $script:allSAIAKeys -AllowedKeyNames $currentCustomerProfile.AllowedSAIAKeys; $permittedRLKeys=Get-PermittedKeys -AllKeys $script:allRLKeys -AllowedKeyNames $currentCustomerProfile.AllowedRLKeys; $permittedAverittKeys=Get-PermittedKeys -AllKeys $script:allAverittKeys -AllowedKeyNames $currentCustomerProfile.AllowedAverittKeys } catch { [System.Windows.Forms.MessageBox]::Show("Error getting keys: $($_.Exception.Message)"); $textboxResults.Text = "Error getting keys."; return }
+    $permittedCentralKeys=@{}; $permittedSAIAKeys=@{}; $permittedRLKeys=@{}; $permittedAverittKeys=@{}; $permittedAAACooperKeys=@{};
+    try {
+        $currentCustomerProfile = $script:selectedCustomerProfile; if(!$currentCustomerProfile){throw "Customer profile null."};
+        $permittedCentralKeys=Get-PermittedKeys -AllKeys $script:allCentralKeys -AllowedKeyNames $currentCustomerProfile.AllowedCentralKeys
+        $permittedSAIAKeys=Get-PermittedKeys -AllKeys $script:allSAIAKeys -AllowedKeyNames $currentCustomerProfile.AllowedSAIAKeys
+        $permittedRLKeys=Get-PermittedKeys -AllKeys $script:allRLKeys -AllowedKeyNames $currentCustomerProfile.AllowedRLKeys
+        $permittedAverittKeys=Get-PermittedKeys -AllKeys $script:allAverittKeys -AllowedKeyNames $currentCustomerProfile.AllowedAverittKeys
+        $permittedAAACooperKeys=Get-PermittedKeys -AllKeys $script:allAAACooperKeys -AllowedKeyNames $currentCustomerProfile.AllowedAAACooperKeys
+    } catch { [System.Windows.Forms.MessageBox]::Show("Error getting keys: $($_.Exception.Message)"); $textboxResults.Text = "Error getting keys."; return }
 
     # --- Call APIs ---
     $quoteTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'; $finalQuotes=@(); $CurrentVerbosePreference=$VerbosePreference; $VerbosePreference='SilentlyContinue';
     try {
         # Central
-        if ($permittedCentralKeys.Count -gt 0) { $textboxResults.AppendText("Querying Central...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedCentralKeys.Keys|Sort)){ try {$keyData=$permittedCentralKeys[$tariff]; if(!$keyData.accessCode -or !$keyData.customerNumber){throw "cred missing."}; $cost=Invoke-CentralTransportApi -ApiKeyData $keyData -OriginZip $originZip -DestinationZip $destZip -Commodities $commodities; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  Central ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedCentralKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Central", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Central' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Central: Price Calc Err")}}else{$resultsText.AppendLine("  Central: No Rates")}}else{$resultsText.AppendLine("  Central: No Keys")}
+        if ($permittedCentralKeys.Count -gt 0) { $textboxResults.AppendText("Querying Central...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedCentralKeys.Keys|Sort)){ try {$keyData=$permittedCentralKeys[$tariff]; if(!$keyData.accessCode -or !$keyData.customerNumber){throw "cred missing."}; $cost=Invoke-CentralTransportApi -ApiKeyData $keyData -OriginZip $originZip -DestinationZip $destZip -Commodities $commoditiesForApi; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  Central ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedCentralKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Central", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Central' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Central: Price Calc Err")}}else{$resultsText.AppendLine("  Central: No Rates")}}else{$resultsText.AppendLine("  Central: No Keys")}
         # SAIA
-        if ($permittedSAIAKeys.Count -gt 0) { $textboxResults.AppendText("Querying SAIA...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedSAIAKeys.Keys|Sort)){ try {$keyData=$permittedSAIAKeys[$tariff]; $cost=Invoke-SAIAApi -KeyData $keyData -OriginZip $originZip -DestinationZip $destZip -OriginCity $originCity -OriginState $originState -DestinationCity $destCity -DestinationState $destState -Details $commodities; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  SAIA ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedSAIAKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "SAIA", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'SAIA' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  SAIA: Price Calc Err")}}else{$resultsText.AppendLine("  SAIA: No Rates")}}else{$resultsText.AppendLine("  SAIA: No Keys")}
+        if ($permittedSAIAKeys.Count -gt 0) { $textboxResults.AppendText("Querying SAIA...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedSAIAKeys.Keys|Sort)){ try {$keyData=$permittedSAIAKeys[$tariff]; $cost=Invoke-SAIAApi -KeyData $keyData -OriginZip $originZip -DestinationZip $destZip -OriginCity $originCity -OriginState $originState -DestinationCity $destCity -DestinationState $destState -Details $commoditiesForApi; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  SAIA ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedSAIAKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "SAIA", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'SAIA' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  SAIA: Price Calc Err")}}else{$resultsText.AppendLine("  SAIA: No Rates")}}else{$resultsText.AppendLine("  SAIA: No Keys")}
         # R+L
-        if ($permittedRLKeys.Count -gt 0) { $textboxResults.AppendText("Querying R+L...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedRLKeys.Keys|Sort)){ try {$keyData=$permittedRLKeys[$tariff]; if(!$keyData.APIKey){throw "cred missing."}; $cost=Invoke-RLApi -KeyData $keyData -OriginZip $originZip -DestinationZip $destZip -Commodities $commodities -ShipmentDetails $optionalShipmentDetails; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  R+L ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedRLKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "R+L", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'R+L' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  R+L: Price Calc Err")}}else{$resultsText.AppendLine("  R+L: No Rates")}}else{$resultsText.AppendLine("  R+L: No Keys")}
+        if ($permittedRLKeys.Count -gt 0) { $textboxResults.AppendText("Querying R+L...`r`n"); $mainForm.Refresh(); $rates=@{}; foreach ($tariff in ($permittedRLKeys.Keys|Sort)){ try {$keyData=$permittedRLKeys[$tariff]; if(!$keyData.APIKey){throw "cred missing."}; $cost=Invoke-RLApi -KeyData $keyData -OriginZip $originZip -DestinationZip $destZip -Commodities $commoditiesForApi -ShipmentDetails $optionalShipmentDetails; if($cost){$rates[$tariff]=$cost}}catch{$resultsText.AppendLine("  R+L ($tariff): Err - $($_.Exception.Message)") }}; $lowest=Get-MinimumRate -RateResults $rates; if($lowest){ $data=$permittedRLKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "R+L", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'R+L' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  R+L: Price Calc Err")}}else{$resultsText.AppendLine("  R+L: No Rates")}}else{$resultsText.AppendLine("  R+L: No Keys")}
         # Averitt
         if ($permittedAverittKeys.Count -gt 0) {
-            $textboxResults.AppendText("Querying Averitt...`r`n"); $mainForm.Refresh();
-            $rates=@{};
+            $textboxResults.AppendText("Querying Averitt...`r`n"); $mainForm.Refresh(); $rates=@{};
             foreach ($tariff in ($permittedAverittKeys.Keys|Sort)){
                 try {
-                    $keyData=$permittedAverittKeys[$tariff];
-                    if(!$keyData.APIKey){throw "cred missing."};
-                    # Construct detailed shipment data needed by Averitt API
+                    $keyData=$permittedAverittKeys[$tariff]; if(!$keyData.APIKey){throw "cred missing."};
                     $averittShipmentData=[PSCustomObject]@{
-                        ServiceLevel = "STND"; PaymentTerms = "Prepaid"; PaymentPayer = "Shipper"; # Defaults
-                        PickupDate = (Get-Date -Format 'yyyyMMdd'); # Default
-                        OriginAccount = $null; OriginCity = $originCity; OriginStateProvince = $originState; OriginPostalCode = $originZip; OriginCountry = "USA"; # Assuming USA
-                        DestinationAccount = $null; DestinationCity = $destCity; DestinationStateProvince = $destState; DestinationPostalCode = $destZip; DestinationCountry = "USA"; # Assuming USA
-                        BillToAccount = $null; BillToName = "Default BillTo"; BillToAddress = "123 Default"; BillToCity = "Default"; BillToStateProvince = "TN"; BillToPostalCode = "00000"; BillToCountry = "USA"; # Defaults - Adjust if needed
-                        Commodities = $commodities; # Pass the collected array
-                        Accessorials = $null # Add logic if accessorials are needed
+                        ServiceLevel = "STND"; PaymentTerms = "Prepaid"; PaymentPayer = "Shipper";
+                        PickupDate = (Get-Date -Format 'yyyyMMdd');
+                        OriginAccount = $null; OriginCity = $originCity; OriginStateProvince = $originState; OriginPostalCode = $originZip; OriginCountry = "USA";
+                        DestinationAccount = $null; DestinationCity = $destCity; DestinationStateProvince = $destState; DestinationPostalCode = $destZip; DestinationCountry = "USA";
+                        BillToAccount = $null; BillToName = "Default BillTo"; BillToAddress = "123 Default"; BillToCity = "Default"; BillToStateProvince = "TN"; BillToPostalCode = "00000"; BillToCountry = "USA";
+                        Commodities = $commoditiesForApi; Accessorials = $null
                     };
                     if(Get-Command Invoke-AverittApi -EA SilentlyContinue){$cost=Invoke-AverittApi -KeyData $keyData -ShipmentData $averittShipmentData; if($cost){$rates[$tariff]=$cost}} else { throw "Invoke-AverittApi missing."}
                 } catch { $resultsText.AppendLine("  Averitt ($tariff): Err - $($_.Exception.Message)") }
-            }; # End foreach tariff
+            };
             $lowest=Get-MinimumRate -RateResults $rates;
             if($lowest){ $data=$permittedAverittKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage; if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}; $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin; if($quote.FinalPrice){$resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "Averitt", $quote.FinalPrice.ToString("C"), $lowest.TariffName)); $finalQuotes+=$quote; Write-QuoteToHistory -Carrier 'Averitt' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp}else{$resultsText.AppendLine("  Averitt: Price Calc Err")}}else{$resultsText.AppendLine("  Averitt: No Rates")}
         } else { $resultsText.AppendLine("  Averitt: No Keys") }
+
+        # AAA Cooper
+        if ($permittedAAACooperKeys.Count -gt 0) {
+            $textboxResults.AppendText("Querying AAA Cooper...`r`n"); $mainForm.Refresh(); $rates=@{};
+            foreach ($tariff in ($permittedAAACooperKeys.Keys|Sort)){
+                try {
+                    $keyData=$permittedAAACooperKeys[$tariff] # KeyData should contain APIToken, CustomerNumber, WhoAmI
+                    if(!$keyData.APIToken -or !$keyData.CustomerNumber -or !$keyData.WhoAmI){throw "AAA Cooper creds missing from key file."}
+
+                    # Construct the $ShipmentData object for AAA Cooper API
+                    # Map $commoditiesForApi to AAA Cooper's RateEstimateRequestLine structure
+                    $aaaCooperCommodityLines = @()
+                    foreach($comm in $commoditiesForApi){
+                        $aaaCooperCommodityLines += [PSCustomObject]@{
+                            Weight = $comm.weight
+                            Class = $comm.classification # AAA uses 'Class'
+                            NMFC = $null # Populate if available from grid/logic
+                            NMFCSub = $null # Populate if available
+                            HandlingUnits = $comm.pieces
+                            HandlingUnitType = $comm.packagingType # Or a default like "Pallets"
+                            HazMat = if($comm.HazMat -eq 'X') {'X'} else {$null} # Assuming $comm has HazMat property
+                            CubeUnit = if($comm.length -and $comm.width -and $comm.height){"IN"}else{$null}
+                            Length = $comm.length
+                            Width = $comm.width
+                            Height = $comm.height
+                        }
+                    }
+
+                    $aaaCooperShipmentData = [PSCustomObject]@{
+                        OriginCity = $originCity
+                        OriginState = $originState
+                        OriginZip = $originZip
+                        OriginCountryCode = $optionalShipmentDetails.OriginCountryCode # e.g., "USA"
+                        DestinationCity = $destCity
+                        DestinationState = $destState
+                        DestinationZip = $destZip
+                        DestinCountryCode = $optionalShipmentDetails.DestinationCountryCode # e.g., "USA"
+                        BillDate = (Get-Date -Format 'MMddyyyy')
+                        PrePaidCollect = if ($keyData.PrePaidCollect) { $keyData.PrePaidCollect } else { "P" } # Default to P
+                        RateEstimateRequestLine = $aaaCooperCommodityLines
+                        # Add other optional fields like TotalPalletCount, AccLine if needed
+                    }
+
+                    if(Get-Command Invoke-AAACooperApi -EA SilentlyContinue){
+                        $cost=Invoke-AAACooperApi -KeyData $keyData -ShipmentData $aaaCooperShipmentData
+                        if($cost){$rates[$tariff]=$cost}
+                    } else { throw "Invoke-AAACooperApi missing."}
+                } catch { $resultsText.AppendLine("  AAA Cooper ($tariff): Err - $($_.Exception.Message)") }
+            };
+            $lowest=Get-MinimumRate -RateResults $rates;
+            if($lowest){
+                $data=$permittedAAACooperKeys[$lowest.TariffName]; $margin=$Global:DefaultMarginPercentage
+                if($data.MarginPercent){try{$margin=[double]$data.MarginPercent}catch{}}
+                $quote=Calculate-QuotePrice -LowestCarrierCost $lowest.Cost -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -MarginPercent $margin
+                if($quote.FinalPrice){
+                    $resultsText.AppendLine(("  {0,-20}: {1,-15} (Tariff: {2})" -f "AAA Cooper", $quote.FinalPrice.ToString("C"), $lowest.TariffName))
+                    $finalQuotes+=$quote
+                    Write-QuoteToHistory -Carrier 'AAACooper' -Tariff $lowest.TariffName -OriginZip $originZip -DestinationZip $destZip -Weight $totalWeight -FreightClass $firstClass -LowestCost $lowest.Cost -FinalQuotedPrice $quote.FinalPrice -QuoteTimestamp $quoteTimestamp
+                } else { $resultsText.AppendLine("  AAA Cooper: Price Calc Err") }
+            } else { $resultsText.AppendLine("  AAA Cooper: No Rates") }
+        } else { $resultsText.AppendLine("  AAA Cooper: No Keys") }
+
     } finally { $VerbosePreference = $CurrentVerbosePreference }
     # Display Results
     $resultsText.AppendLine("="*58)|Out-Null; $resultsText.AppendLine("* Prices are estimates.*")|Out-Null; $resultsText.AppendLine("--- End Quote ---")|Out-Null; $textboxResults.Text = $resultsText.ToString(); $statusBar.Text = "Quote complete."
 })
 
 # --- Settings Tab Handlers ---
-$settingsCarrierChangedHandler = { param($sender, $e); if ($sender.Checked) { $custName = $null; if($comboBoxSelectCustomer_Settings.SelectedIndex -ge 0){$custName=$comboBoxSelectCustomer_Settings.SelectedItem.ToString()}; if($custName){$carrier="Central"; if($radioSAIA.Checked){$carrier="SAIA"}elseif($radioRL.Checked){$carrier="RL"}elseif($radioAveritt.Checked){$carrier="Averitt"}; try{Populate-TariffListBox -SelectedCarrier $carrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $custName -AllCustomerProfiles $script:allCustomerProfiles}catch{$statusBar.Text="Err refresh settings"}}else{$listBoxTariffs.Items.Clear();$listBoxTariffs.Items.Add("Select Customer");$labelSelectedTariff.Text="Selected: (None)";$buttonSetMargin.Enabled=$false;$textBoxNewMargin.Enabled=$false;$textBoxNewMargin.Clear()} } }
-$radioCentral.Add_CheckedChanged($settingsCarrierChangedHandler); $radioSAIA.Add_CheckedChanged($settingsCarrierChangedHandler); $radioRL.Add_CheckedChanged($settingsCarrierChangedHandler); $radioAveritt.Add_CheckedChanged($settingsCarrierChangedHandler);
+$settingsCarrierChangedHandler = {
+    param($sender, $e)
+    if ($sender.Checked) {
+        $custName = $null; if($comboBoxSelectCustomer_Settings.SelectedIndex -ge 0){$custName=$comboBoxSelectCustomer_Settings.SelectedItem.ToString()}
+        if($custName){
+            $carrier="Central" # Default
+            if($radioSAIA.Checked){$carrier="SAIA"}
+            elseif($radioRL.Checked){$carrier="RL"}
+            elseif($radioAveritt.Checked){$carrier="Averitt"}
+            elseif($radioAAACooper.Checked){$carrier="AAACooper"} # Added AAA Cooper
+            try{Populate-TariffListBox -SelectedCarrier $carrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $custName -AllCustomerProfiles $script:allCustomerProfiles}
+            catch{$statusBar.Text="Err refresh settings"}
+        } else {
+            $listBoxTariffs.Items.Clear();$listBoxTariffs.Items.Add("Select Customer")
+            $labelSelectedTariff.Text="Selected: (None)";$buttonSetMargin.Enabled=$false;$textBoxNewMargin.Enabled=$false;$textBoxNewMargin.Clear()
+        }
+    }
+}
+$radioCentral.Add_CheckedChanged($settingsCarrierChangedHandler)
+$radioSAIA.Add_CheckedChanged($settingsCarrierChangedHandler)
+$radioRL.Add_CheckedChanged($settingsCarrierChangedHandler)
+$radioAveritt.Add_CheckedChanged($settingsCarrierChangedHandler)
+$radioAAACooper.Add_CheckedChanged($settingsCarrierChangedHandler) # Added AAA Cooper
 
 $listBoxTariffs.Add_SelectedIndexChanged({ if($listBoxTariffs.SelectedIndex -ge 0){$itemTxt=$listBoxTariffs.SelectedItem.ToString();$tariffName=$null;$idx=$itemTxt.LastIndexOf('%');if($idx -gt 0){$sIdx=$itemTxt.LastIndexOf(' ',$idx);if($sIdx -gt 0){$tariffName=$itemTxt.Substring(0,$sIdx).Trim()}else{$tariffName=$itemTxt.Split(' ')[0].Trim()}}else{$tariffName=$itemTxt.Trim()};$labelSelectedTariff.Text="Selected: $tariffName";$textBoxNewMargin.Enabled=$true;$buttonSetMargin.Enabled=$true}else{$labelSelectedTariff.Text="Selected: (None)";$textBoxNewMargin.Enabled=$false;$buttonSetMargin.Enabled=$false} })
 
-$buttonSetMargin.Add_Click({ param($sender, $e); if($listBoxTariffs.SelectedIndex -lt 0){[System.Windows.Forms.MessageBox]::Show("Select tariff.");return}; $itemTxt=$listBoxTariffs.SelectedItem.ToString();$tariffName=$null;$idx=$itemTxt.LastIndexOf('%');if($idx -gt 0){$sIdx=$itemTxt.LastIndexOf(' ',$idx);if($sIdx -gt 0){$tariffName=$itemTxt.Substring(0,$sIdx).Trim()}else{$tariffName=$itemTxt.Split(' ')[0].Trim()}}else{$tariffName=$itemTxt.Trim()}; if([string]::IsNullOrWhiteSpace($tariffName) -or $tariffName -match "^(No permitted|Select)"){ [System.Windows.Forms.MessageBox]::Show("Invalid tariff."); return }; $marginInput=$textBoxNewMargin.Text;$marginPercent=$null;try{$mVal=[double]$marginInput;if($mVal -ge 0 -and $mVal -lt 100){$marginPercent=[math]::Round($mVal,1)}else{throw "Margin 0.0-99.9."}}catch{[System.Windows.Forms.MessageBox]::Show("Invalid margin %.");return}; $carrier="Central";if($radioSAIA.Checked){$carrier="SAIA"}elseif($radioRL.Checked){$carrier="RL"}elseif($radioAveritt.Checked){$carrier="Averitt"};$keysPath=$null;$allKeys=@{}; switch($carrier){"Central"{$keysPath=$script:centralKeysFolderPath;$allKeys=$script:allCentralKeys}"SAIA"{$keysPath=$script:saiaKeysFolderPath;$allKeys=$script:allSAIAKeys}"RL"{$keysPath=$script:rlKeysFolderPath;$allKeys=$script:allRLKeys}"Averitt"{$keysPath=$script:averittKeysFolderPath;$allKeys=$script:allAverittKeys}default{[System.Windows.Forms.MessageBox]::Show("Cannot find folder.");return}}; $statusBar.Text="Updating...";$success=$false; try{if(!(Get-Command Update-TariffMargin -EA SilentlyContinue)){throw "Update func missing."};$success=Update-TariffMargin -TariffName $tariffName -AllKeysHashtable $allKeys -KeysFolderPath $keysPath -NewMarginPercent $marginPercent}catch{[System.Windows.Forms.MessageBox]::Show("Update Error: $($_.Exception.Message)");$statusBar.Text="Update failed.";return}; if($success){$statusBar.Text="Updated '$tariffName'.";[System.Windows.Forms.MessageBox]::Show("Margin updated.");$custName=$null;if($comboBoxSelectCustomer_Settings.SelectedIndex -ge 0){$custName=$comboBoxSelectCustomer_Settings.SelectedItem.ToString()};if($custName){Populate-TariffListBox -SelectedCarrier $carrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $custName -AllCustomerProfiles $script:allCustomerProfiles};$textBoxNewMargin.Clear()}else{$statusBar.Text="Update failed.";[System.Windows.Forms.MessageBox]::Show("Update failed.")} })
+$buttonSetMargin.Add_Click({
+    param($sender, $e)
+    if($listBoxTariffs.SelectedIndex -lt 0){[System.Windows.Forms.MessageBox]::Show("Select tariff.");return}
+    $itemTxt=$listBoxTariffs.SelectedItem.ToString();$tariffName=$null;$idx=$itemTxt.LastIndexOf('%');if($idx -gt 0){$sIdx=$itemTxt.LastIndexOf(' ',$idx);if($sIdx -gt 0){$tariffName=$itemTxt.Substring(0,$sIdx).Trim()}else{$tariffName=$itemTxt.Split(' ')[0].Trim()}}else{$tariffName=$itemTxt.Trim()}; if([string]::IsNullOrWhiteSpace($tariffName) -or $tariffName -match "^(No permitted|Select)"){ [System.Windows.Forms.MessageBox]::Show("Invalid tariff."); return };
+    $marginInput=$textBoxNewMargin.Text;$marginPercent=$null;try{$mVal=[double]$marginInput;if($mVal -ge 0 -and $mVal -lt 100){$marginPercent=[math]::Round($mVal,1)}else{throw "Margin 0.0-99.9."}}catch{[System.Windows.Forms.MessageBox]::Show("Invalid margin %.");return};
+    $carrier="Central";if($radioSAIA.Checked){$carrier="SAIA"}elseif($radioRL.Checked){$carrier="RL"}elseif($radioAveritt.Checked){$carrier="Averitt"}elseif($radioAAACooper.Checked){$carrier="AAACooper"} # Added AAA Cooper
+
+    $keysPath=$null;$allKeys=@{};
+    switch($carrier){
+        "Central"{$keysPath=$script:centralKeysFolderPath;$allKeys=$script:allCentralKeys}
+        "SAIA"{$keysPath=$script:saiaKeysFolderPath;$allKeys=$script:allSAIAKeys}
+        "RL"{$keysPath=$script:rlKeysFolderPath;$allKeys=$script:allRLKeys}
+        "Averitt"{$keysPath=$script:averittKeysFolderPath;$allKeys=$script:allAverittKeys}
+        "AAACooper"{$keysPath=$script:aaaCooperKeysFolderPath;$allKeys=$script:allAAACooperKeys} # Added AAA Cooper
+        default{[System.Windows.Forms.MessageBox]::Show("Cannot find folder for carrier: $carrier");return}
+    }
+    $statusBar.Text="Updating...";$success=$false;
+    try{if(!(Get-Command Update-TariffMargin -EA SilentlyContinue)){throw "Update func missing."};$success=Update-TariffMargin -TariffName $tariffName -AllKeysHashtable $allKeys -KeysFolderPath $keysPath -NewMarginPercent $marginPercent}catch{[System.Windows.Forms.MessageBox]::Show("Update Error: $($_.Exception.Message)");$statusBar.Text="Update failed.";return};
+    if($success){$statusBar.Text="Updated '$tariffName'.";[System.Windows.Forms.MessageBox]::Show("Margin updated.");$custName=$null;if($comboBoxSelectCustomer_Settings.SelectedIndex -ge 0){$custName=$comboBoxSelectCustomer_Settings.SelectedItem.ToString()};if($custName){Populate-TariffListBox -SelectedCarrier $carrier -ListBoxControl $listBoxTariffs -LabelControl $labelSelectedTariff -ButtonControl $buttonSetMargin -TextboxControl $textBoxNewMargin -SelectedCustomerName $custName -AllCustomerProfiles $script:allCustomerProfiles};$textBoxNewMargin.Clear()}else{$statusBar.Text="Update failed.";[System.Windows.Forms.MessageBox]::Show("Update failed.")}
+})
 
 # --- Reports Tab Handlers ---
-$comboBoxReportType_SelectedIndexChanged_ScriptBlock = { param($sender, $e); $report=$null;if($comboBoxReportType.SelectedIndex -ge 0){$report=$comboBoxReportType.SelectedItem.ToString()}else{return};$groupBoxReportCarrierSelect.Visible=$false;$groupBoxReportTariffSelect.Visible=$false;$labelReportTariff2.Visible=$false;$listBoxReportTariff2.Visible=$false;$labelSelectCsv.Visible=$false;$textboxCsvPath.Visible=$false;$buttonSelectCsv.Visible=$false;$groupBoxReportAspInput.Visible=$false;$checkBoxApplyMargins.Visible=$false; $dynY=$reportsPanelY+(2*$reportsControlSpacing);$needsCarrier=$report -in @("Carrier Comparison","Avg Required Margin","Required Margin for ASP");$needsCsv=$true;$needsAsp=$report -in @("Required Margin for ASP","Cross-Carrier ASP Analysis");$needsApply=$report -in @("Cross-Carrier ASP Analysis","Margins by History");if($report -eq 'NoCsvReport'){$needsCsv=$false}; if($needsCarrier){$groupBoxReportCarrierSelect.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$groupBoxReportCarrierSelect.Visible=$true;$dynY+=$groupBoxReportCarrierSelect.Height+$verticalPaddingBetweenControls};if($needsCarrier){$groupBoxReportTariffSelect.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$groupBoxReportTariffSelect.Visible=$true;$dynY+=$groupBoxReportTariffSelect.Height+$verticalPaddingBetweenControls;if($report -in @("Carrier Comparison","Avg Required Margin")){$labelReportTariff2.Visible=$true;$listBoxReportTariff2.Visible=$true;$labelReportTariff1.Text="Tariff 1 (Base):"}else{$labelReportTariff2.Visible=$false;$listBoxReportTariff2.Visible=$false;$labelReportTariff1.Text="Select Tariff:"};$custName=$null;if($comboBoxSelectCustomer_Reports.SelectedIndex -ge 0){$custName=$comboBoxSelectCustomer_Reports.SelectedItem.ToString()};if($custName){$carrier="Central";if($radioReportSAIA.Checked){$carrier="SAIA"}elseif($radioReportRL.Checked){$carrier="RL"}elseif($radioReportAveritt.Checked){$carrier="Averitt"};try{Populate-ReportTariffListBoxes -SelectedCarrier $carrier -ReportType $report -SelectedCustomerName $custName -AllCustomerProfiles $script:allCustomerProfiles -ListBox1 $listBoxReportTariff1 -Label1 $labelReportTariff1 -ListBox2 $listBoxReportTariff2 -Label2 $labelReportTariff2}catch{$statusBar.Text="Err refresh rpt list"}}else{$listBoxReportTariff1.Items.Clear();$listBoxReportTariff1.Items.Add("Select Cust");$listBoxReportTariff2.Items.Clear();$listBoxReportTariff2.Items.Add("Select Cust")}}; if($needsCsv){$labelSelectCsv.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$labelSelectCsv.Visible=$true;$textboxCsvPath.Location=[System.Drawing.Point]::new(($reportsPanelX+$reportsLabelWidth+5),($dynY-3));$textboxCsvPath.Visible=$true;$buttonSelectCsv.Location=[System.Drawing.Point]::new(($reportsPanelX+$reportsLabelWidth+$reportsInputWidth+10),($dynY-5));$buttonSelectCsv.Visible=$true;$dynY+=$reportsControlSpacing}; if($needsAsp){$groupBoxReportAspInput.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$groupBoxReportAspInput.Visible=$true;$dynY+=$groupBoxReportAspInput.Height+$verticalPaddingBetweenControls}; if($needsApply){$checkBoxApplyMargins.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$checkBoxApplyMargins.Visible=$true;$dynY+=$checkBoxApplyMargins.Height+$verticalPaddingBetweenControls}; $buttonRunReport.Location=[System.Drawing.Point]::new(($reportsPanelX+$reportsLabelWidth+5),$dynY);$dynY+=$buttonRunReport.Height+$verticalPaddingBetweenControls; $textboxReportResults.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$textboxReportResults.Height=$reportsPanel.ClientSize.Height-$dynY-$verticalPaddingBetweenControls }
+$comboBoxReportType_SelectedIndexChanged_ScriptBlock = {
+    param($sender, $e)
+    $report=$null;if($comboBoxReportType.SelectedIndex -ge 0){$report=$comboBoxReportType.SelectedItem.ToString()}else{return};
+    $groupBoxReportCarrierSelect.Visible=$false;$groupBoxReportTariffSelect.Visible=$false;$labelReportTariff2.Visible=$false;$listBoxReportTariff2.Visible=$false;$labelSelectCsv.Visible=$false;$textboxCsvPath.Visible=$false;$buttonSelectCsv.Visible=$false;$groupBoxReportAspInput.Visible=$false;$checkBoxApplyMargins.Visible=$false;
+    $dynY=$reportsPanelY+(2*$reportsControlSpacing);
+    $needsCarrier=$report -in @("Carrier Comparison","Avg Required Margin","Required Margin for ASP");
+    $needsCsv=$true; # Most reports need CSV
+    $needsAsp=$report -in @("Required Margin for ASP","Cross-Carrier ASP Analysis");
+    $needsApply=$report -in @("Cross-Carrier ASP Analysis","Margins by History");
+
+    if($needsCarrier){$groupBoxReportCarrierSelect.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$groupBoxReportCarrierSelect.Visible=$true;$dynY+=$groupBoxReportCarrierSelect.Height+$verticalPaddingBetweenControls};
+    if($needsCarrier -or $report -eq "Required Margin for ASP"){ # Required Margin for ASP also needs tariff selection
+        $groupBoxReportTariffSelect.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$groupBoxReportTariffSelect.Visible=$true;$dynY+=$groupBoxReportTariffSelect.Height+$verticalPaddingBetweenControls;
+        if($report -in @("Carrier Comparison","Avg Required Margin")){$labelReportTariff2.Visible=$true;$listBoxReportTariff2.Visible=$true;$labelReportTariff1.Text="Tariff 1 (Base):"}
+        else{$labelReportTariff2.Visible=$false;$listBoxReportTariff2.Visible=$false;$labelReportTariff1.Text="Select Tariff:"};
+        
+        $custName=$null;if($comboBoxSelectCustomer_Reports.SelectedIndex -ge 0){$custName=$comboBoxSelectCustomer_Reports.SelectedItem.ToString()};
+        if($custName){
+            $carrier="Central"; # Default
+            if($radioReportSAIA.Checked){$carrier="SAIA"}
+            elseif($radioReportRL.Checked){$carrier="RL"}
+            elseif($radioReportAveritt.Checked){$carrier="Averitt"}
+            elseif($radioReportAAACooper.Checked){$carrier="AAACooper"} # Added AAA Cooper
+            try{Populate-ReportTariffListBoxes -SelectedCarrier $carrier -ReportType $report -SelectedCustomerName $custName -AllCustomerProfiles $script:allCustomerProfiles -ListBox1 $listBoxReportTariff1 -Label1 $labelReportTariff1 -ListBox2 $listBoxReportTariff2 -Label2 $labelReportTariff2}
+            catch{$statusBar.Text="Err refresh rpt list"}
+        }else{$listBoxReportTariff1.Items.Clear();$listBoxReportTariff1.Items.Add("Select Cust");$listBoxReportTariff2.Items.Clear();$listBoxReportTariff2.Items.Add("Select Cust")}
+    };
+    if($needsCsv){$labelSelectCsv.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$labelSelectCsv.Visible=$true;$textboxCsvPath.Location=[System.Drawing.Point]::new(($reportsPanelX+$reportsLabelWidth+5),($dynY-3));$textboxCsvPath.Visible=$true;$buttonSelectCsv.Location=[System.Drawing.Point]::new(($reportsPanelX+$reportsLabelWidth+$reportsInputWidth+10),($dynY-5));$buttonSelectCsv.Visible=$true;$dynY+=$reportsControlSpacing};
+    if($needsAsp){$groupBoxReportAspInput.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$groupBoxReportAspInput.Visible=$true;$dynY+=$groupBoxReportAspInput.Height+$verticalPaddingBetweenControls};
+    if($needsApply){$checkBoxApplyMargins.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$checkBoxApplyMargins.Visible=$true;$dynY+=$checkBoxApplyMargins.Height+$verticalPaddingBetweenControls};
+    $buttonRunReport.Location=[System.Drawing.Point]::new(($reportsPanelX+$reportsLabelWidth+5),$dynY);$dynY+=$buttonRunReport.Height+$verticalPaddingBetweenControls;
+    $textboxReportResults.Location=[System.Drawing.Point]::new($reportsPanelX,$dynY);$textboxReportResults.Height=$reportsPanel.ClientSize.Height-$dynY-$verticalPaddingBetweenControls
+}
 $comboBoxReportType.Add_SelectedIndexChanged($comboBoxReportType_SelectedIndexChanged_ScriptBlock)
 
 $reportCarrierChangedHandler = { param($sender, $e); if ($sender.Checked) { $comboBoxReportType_SelectedIndexChanged_ScriptBlock.Invoke($comboBoxReportType, [System.EventArgs]::Empty) } }
-$radioReportCentral.Add_CheckedChanged($reportCarrierChangedHandler); $radioReportSAIA.Add_CheckedChanged($reportCarrierChangedHandler); $radioReportRL.Add_CheckedChanged($reportCarrierChangedHandler); $radioReportAveritt.Add_CheckedChanged($reportCarrierChangedHandler);
+$radioReportCentral.Add_CheckedChanged($reportCarrierChangedHandler)
+$radioReportSAIA.Add_CheckedChanged($reportCarrierChangedHandler)
+$radioReportRL.Add_CheckedChanged($reportCarrierChangedHandler)
+$radioReportAveritt.Add_CheckedChanged($reportCarrierChangedHandler)
+$radioReportAAACooper.Add_CheckedChanged($reportCarrierChangedHandler) # Added AAA Cooper
 
 $buttonSelectCsv.Add_Click({ param($sender, $e); $csvPath = Select-CsvFile -DialogTitle "Select Report Data CSV" -InitialDirectory $script:shipmentDataFolderPath; if ($csvPath) { $textboxCsvPath.Text = $csvPath } })
 
@@ -509,13 +682,28 @@ $buttonRunReport.Add_Click({
     $reportsFolder=$script:currentUserReportsFolder;$reportFunction=$null;$reportParams=@{CsvFilePath=$csvPath;UserReportsFolder=$reportsFolder};if($brokerProfile.Username){$reportParams.Username=$brokerProfile.Username}else{$reportParams.Username="UnknownUser"}
     $selectedCarrier=$null;$key1Data=$null;$key2Data=$null;$allKeys=$null
     try {
-        if ($groupBoxReportCarrierSelect.Visible) { if($radioReportCentral.Checked){$selectedCarrier="Central";$allKeys=$script:allCentralKeys}elseif($radioReportSAIA.Checked){$selectedCarrier="SAIA";$allKeys=$script:allSAIAKeys}elseif($radioReportRL.Checked){$selectedCarrier="RL";$allKeys=$script:allRLKeys}elseif($radioReportAveritt.Checked){$selectedCarrier="Averitt";$allKeys=$script:allAverittKeys}else{throw "No carrier."}; if($listBoxReportTariff1.SelectedIndex -lt 0 -or $listBoxReportTariff1.SelectedItem.ToString() -match "^(No|Select)"){throw "Select Tariff 1."};$tariff1Name=$listBoxReportTariff1.SelectedItem.ToString();if(!$allKeys.ContainsKey($tariff1Name)){throw "Tariff 1 data missing."};$key1Data=$allKeys[$tariff1Name]; if($listBoxReportTariff2.Visible){if($listBoxReportTariff2.SelectedIndex -lt 0 -or $listBoxReportTariff2.SelectedItem.ToString() -match "^(No|Select)"){throw "Select Tariff 2."};$tariff2Name=$listBoxReportTariff2.SelectedItem.ToString();if($tariff1Name -eq $tariff2Name){throw "Tariffs same."};if(!$allKeys.ContainsKey($tariff2Name)){throw "Tariff 2 data missing."};$key2Data=$allKeys[$tariff2Name]} }
+        if ($groupBoxReportCarrierSelect.Visible) {
+            if($radioReportCentral.Checked){$selectedCarrier="Central";$allKeys=$script:allCentralKeys}
+            elseif($radioReportSAIA.Checked){$selectedCarrier="SAIA";$allKeys=$script:allSAIAKeys}
+            elseif($radioReportRL.Checked){$selectedCarrier="RL";$allKeys=$script:allRLKeys}
+            elseif($radioReportAveritt.Checked){$selectedCarrier="Averitt";$allKeys=$script:allAverittKeys}
+            elseif($radioReportAAACooper.Checked){$selectedCarrier="AAACooper";$allKeys=$script:allAAACooperKeys} # Added AAA Cooper
+            else{throw "No carrier selected in groupbox."};
+
+            if($listBoxReportTariff1.SelectedIndex -lt 0 -or $listBoxReportTariff1.SelectedItem.ToString() -match "^(No|Select)"){throw "Select Tariff 1."};
+            $tariff1Name=$listBoxReportTariff1.SelectedItem.ToString();if(!$allKeys.ContainsKey($tariff1Name)){throw "Tariff 1 data missing for $tariff1Name."};$key1Data=$allKeys[$tariff1Name];
+            if($listBoxReportTariff2.Visible){
+                if($listBoxReportTariff2.SelectedIndex -lt 0 -or $listBoxReportTariff2.SelectedItem.ToString() -match "^(No|Select)"){throw "Select Tariff 2."};
+                $tariff2Name=$listBoxReportTariff2.SelectedItem.ToString();if($tariff1Name -eq $tariff2Name){throw "Tariffs cannot be the same."};
+                if(!$allKeys.ContainsKey($tariff2Name)){throw "Tariff 2 data missing for $tariff2Name."};$key2Data=$allKeys[$tariff2Name]
+            }
+        }
         switch ($selectedReportType) {
-            "Carrier Comparison"{if(!$selectedCarrier -or !$key1Data -or !$key2Data){throw "Need Carrier+2Tariffs."};$reportFunction="Run-{0}ComparisonReportGUI" -f $selectedCarrier;$reportParams.Key1Data=$key1Data;$reportParams.Key2Data=$key2Data}
-            "Avg Required Margin"{if(!$selectedCarrier -or !$key1Data -or !$key2Data){throw "Need Carrier+2Tariffs."};$reportFunction="Run-{0}MarginReportGUI" -f $selectedCarrier;$reportParams.BaseKeyData=$key1Data;$reportParams.ComparisonKeyData=$key2Data}
-            "Required Margin for ASP"{if(!$selectedCarrier -or !$key1Data){throw "Need Carrier+Tariff."};if(!$groupBoxReportAspInput.Visible){throw "ASP Input missing."};$aspInput=$textBoxDesiredAsp.Text;if(!($aspInput -match '^\d+(\.\d+)?$' -and ([decimal]$aspInput -gt 0))){throw "Invalid ASP."};$reportFunction="Calculate-{0}MarginForASPReportGUI" -f $selectedCarrier;$reportParams.CostAccountInfo=$key1Data;$reportParams.DesiredASP=[decimal]$aspInput}
-            "Cross-Carrier ASP Analysis"{if(!$groupBoxReportAspInput.Visible){throw "ASP Input missing."};$aspInput=$textBoxDesiredAsp.Text;if(!($aspInput -match '^\d+(\.\d+)?$' -and ([decimal]$aspInput -gt 0))){throw "Invalid ASP."};$reportFunction="Run-CrossCarrierASPAnalysisGUI";$reportParams=@{BrokerProfile=$brokerProfile;SelectedCustomerProfile=$customerProfile;ReportsBaseFolder=$script:reportsBaseFolderPath;UserReportsFolder=$reportsFolder;AllCentralKeys=$script:allCentralKeys;AllSAIAKeys=$script:allSAIAKeys;AllRLKeys=$script:allRLKeys;AllAverittKeys=$script:allAverittKeys;DesiredASPValue=[decimal]$aspInput;ApplyMargins=$checkBoxApplyMargins.Checked;ASPFromHistory=$false;CsvFilePath=$csvPath}}
-            "Margins by History"{$reportFunction="Run-MarginsByHistoryAnalysisGUI";$reportParams=@{BrokerProfile=$brokerProfile;SelectedCustomerProfile=$customerProfile;ReportsBaseFolder=$script:reportsBaseFolderPath;UserReportsFolder=$reportsFolder;AllCentralKeys=$script:allCentralKeys;AllSAIAKeys=$script:allSAIAKeys;AllRLKeys=$script:allRLKeys;AllAverittKeys=$script:allAverittKeys;CsvFilePath=$csvPath;ApplyMargins=$checkBoxApplyMargins.Checked}}
+            "Carrier Comparison"{if(!$selectedCarrier -or !$key1Data -or !$key2Data){throw "Need Carrier + 2 Tariffs."};$reportFunction="Run-{0}ComparisonReportGUI" -f $selectedCarrier;$reportParams.Key1Data=$key1Data;$reportParams.Key2Data=$key2Data}
+            "Avg Required Margin"{if(!$selectedCarrier -or !$key1Data -or !$key2Data){throw "Need Carrier + 2 Tariffs."};$reportFunction="Run-{0}MarginReportGUI" -f $selectedCarrier;$reportParams.BaseKeyData=$key1Data;$reportParams.ComparisonKeyData=$key2Data}
+            "Required Margin for ASP"{if(!$selectedCarrier -or !$key1Data){throw "Need Carrier + Tariff."};if(!$groupBoxReportAspInput.Visible){throw "ASP Input missing."};$aspInput=$textBoxDesiredAsp.Text;if(!($aspInput -match '^\d+(\.\d+)?$' -and ([decimal]$aspInput -gt 0))){throw "Invalid ASP."};$reportFunction="Calculate-{0}MarginForASPReportGUI" -f $selectedCarrier;$reportParams.CostAccountInfo=$key1Data;$reportParams.DesiredASP=[decimal]$aspInput}
+            "Cross-Carrier ASP Analysis"{if(!$groupBoxReportAspInput.Visible){throw "ASP Input missing."};$aspInput=$textBoxDesiredAsp.Text;if(!($aspInput -match '^\d+(\.\d+)?$' -and ([decimal]$aspInput -gt 0))){throw "Invalid ASP."};$reportFunction="Run-CrossCarrierASPAnalysisGUI";$reportParams=@{BrokerProfile=$brokerProfile;SelectedCustomerProfile=$customerProfile;ReportsBaseFolder=$script:reportsBaseFolderPath;UserReportsFolder=$reportsFolder;AllCentralKeys=$script:allCentralKeys;AllSAIAKeys=$script:allSAIAKeys;AllRLKeys=$script:allRLKeys;AllAverittKeys=$script:allAverittKeys;AllAAACooperKeys=$script:allAAACooperKeys;DesiredASPValue=[decimal]$aspInput;ApplyMargins=$checkBoxApplyMargins.Checked;ASPFromHistory=$false;CsvFilePath=$csvPath}}
+            "Margins by History"{$reportFunction="Run-MarginsByHistoryAnalysisGUI";$reportParams=@{BrokerProfile=$brokerProfile;SelectedCustomerProfile=$customerProfile;ReportsBaseFolder=$script:reportsBaseFolderPath;UserReportsFolder=$reportsFolder;AllCentralKeys=$script:allCentralKeys;AllSAIAKeys=$script:allSAIAKeys;AllRLKeys=$script:allRLKeys;AllAverittKeys=$script:allAverittKeys;AllAAACooperKeys=$script:allAAACooperKeys;CsvFilePath=$csvPath;ApplyMargins=$checkBoxApplyMargins.Checked}}
             default{throw "Report type '$selectedReportType' invalid."}
         }
         $statusBar.Text="Running: $selectedReportType...";$mainForm.Refresh();Write-Verbose "Calling $reportFunction";$reportOutputPath = & $reportFunction @reportParams
@@ -527,3 +715,4 @@ $buttonRunReport.Add_Click({
 $mainForm.Add_Shown({ if ($loginPanel.Visible) { $textboxUsername.Focus() } })
 [void]$mainForm.ShowDialog()
 Write-Host "GUI Closed."
+

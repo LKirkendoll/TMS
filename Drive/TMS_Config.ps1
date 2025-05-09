@@ -1,41 +1,38 @@
-# Configuration for the TMS Tool (Margins stored in Key Files)
+# TMS_Config.ps1
+# Description: Configuration settings for the TMS Tool.
 
-# --- Default Folder Names (Relative to script root) ---
-# These can be overridden by parameters passed to the main script
+# --- API Endpoints ---
+$script:centralApiUri = "https://api.cntl.com/api/ratequote" # Example, replace with actual
+$script:saiaApiUri = "https://api.saia.com/api/v1/ratequote"    # Example, replace with actual
+$script:rlApiUri = "http://www2.rlcarriers.com/freight/shipping/rate-quote.asmx" # Example, replace with actual R+L SOAP endpoint
+$script:averittApiUri = "https://api.averittexpress.com/rating/v1/rates" # Example, replace with actual
+$script:aaaCooperApiUri = "https://api2.aaacooper.com:8200/sapi30/wsGenEst" # AAA Cooper Endpoint
+
+# --- Default Folder Names (relative to script root) ---
+$script:defaultUserAccountsFolderName = "user_accounts"
+$script:defaultCustomerAccountsFolderName = "customer_accounts"
+$script:defaultReportsBaseFolderName = "reports"
+$script:defaultShipmentDataFolderName = "shipmentData"
+$script:defaultHistoricalQuotesFileName = "historical_quotes_generated.csv" # Inside shipmentDataFolderName
+
+# Carrier Specific Key/Tariff Folders
 $script:defaultCentralKeysFolderName = "keys_central"
 $script:defaultSAIAKeysFolderName = "keys_saia"
 $script:defaultRLKeysFolderName = "keys_rl"
-$script:defaultAverittKeysFolderName = "keys_averitt" # Ensure this matches your folder structure
-$script:defaultUserAccountsFolderName = "user_accounts" # For BROKER logins
-$script:defaultCustomerAccountsFolderName = "customer_accounts" # For CUSTOMER profiles
-$script:defaultReportsBaseFolderName = "reports"
-$script:defaultShipmentDataFolderName = "shipmentData"
+$script:defaultAverittKeysFolderName = "keys_averitt"
+$script:defaultAAACooperKeysFolderName = "keys_aaacooper" # New Folder for AAA Cooper
 
-# --- API Endpoints ---
-# Use $script: scope so helper functions can access them via $script:
-$script:centralApiUri = 'https://client-api.centraltransport.com/api/v1/Quote/byDimensions' # Example URL
-$script:saiaApiUri = "https://api.saia.com/rate-quote/webservice/ratequote/customer-api" # Example URL
-$script:rlApiUri = "http://api.rlcarriers.com/1.0.3/RateQuoteService.asmx" # Example URL
-# <<< Added Averitt API URI from API Guide >>>
-$script:averittApiUri = "https://api.averittexpress.com/rate-quotes/dynamicpricing" # From API Guide page 3
+# --- Default Settings ---
+$script:DefaultMarginPercentage = 20.0 # Default margin if not specified in tariff file
+$script:DefaultMinProfit = 50.0       # Default minimum profit if not specified
 
-# --- Pricing & Margin Configuration ---
-# Default margin percentage to use ONLY if a key file is missing the 'MarginPercent' line.
-# Use Global scope for values potentially needed across different script scopes if not passed directly
-$Global:DefaultMarginPercentage = 15.0 # e.g., 15%
+# --- Logging & Debug ---
+$script:EnableFullApiLogging = $false # Set to $true to log full API requests/responses (can be verbose)
+$script:ApiLogPath = Join-Path $PSScriptRoot "api_logs" # Ensure this directory exists if logging enabled
 
-# --- Historical Pricing Configuration ---
-# Specify the filename of the CSV containing actual historical shipment data
-# Place this file inside the 'shipmentData' folder.
-$Global:HistoricalDataSourceFileName = "shipmentHistory.csv" # Make sure this file exists if used
+# --- GUI Appearance (Optional, can be overridden in TMS_GUI.ps1) ---
+$script:guiFontFamily = "Segoe UI"
+$script:guiFontSize = 9
+$script:guiThemeColor = "0,120,215" # RGB for a blueish theme
 
-# Filename for the log where THIS tool writes its generated quotes (separate from source data)
-$Global:HistoricalQuotesLogFileName = "historical_quotes_generated.csv"
-
-# Weight tolerance for historical matching (+/- this percentage)
-$Global:HistoricalWeightTolerance = 0.10 # +/- 10%
-
-# --- Other Settings ---
-# Add any other global configuration variables here
-
-Write-Host "Configuration defaults loaded." -ForegroundColor Cyan
+Write-Verbose "TMS Configuration loaded."

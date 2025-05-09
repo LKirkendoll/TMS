@@ -1,0 +1,6 @@
+Name:AAABlanketAerco
+APIToken:986076c1-e1f9-415f-9442-b277121dcaeb
+CustomerNumber:3313035
+WhoAmI:S
+PrePaidCollect:P
+MarginPercent:20

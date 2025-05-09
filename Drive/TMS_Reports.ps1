@@ -1,39 +1,105 @@
 # TMS_Reports.ps1
 # Description: Contains functions for generating various reports and analyses,
-#              refactored to accept parameters for GUI use. Corrected parameter mismatch and added Averitt processing.
-#              Requires TMS_Helpers.ps1 and TMS_Config.ps1 to be loaded first.
+#              refactored to accept parameters for GUI use. Includes AAA Cooper integration.
+#              Requires TMS_Helpers_General.ps1, carrier-specific helpers, and TMS_Config.ps1 to be loaded first.
 #              This file should be dot-sourced by the main script.
 
-# Assumes TMS_Helpers.ps1 functions are available.
+# Assumes TMS_Helpers_General.ps1 functions are available.
 # Assumes TMS_Config.ps1 variables are available.
 # Assumes TMS_Carrier_*.ps1 functions (GUI versions) are available.
 
-# --- Report Management (Keep for now, but GUI might use different approach) ---
+# --- Report Management (Console-based, GUI has its own interaction model) ---
 function Manage-UserReports {
     param(
         [Parameter(Mandatory=$true)]
         [string]$UserReportsFolder
     )
-    # This function retains console interaction and might not be directly used by GUI.
-    # GUI will likely implement its own report Browse/management.
-    if (-not (Test-Path $UserReportsFolder)) { Write-Warning "No reports folder found at '$UserReportsFolder'."; Read-Host "..."; return }
+    if (-not (Test-Path $UserReportsFolder)) { Write-Warning "No reports folder found at '$UserReportsFolder'."; Read-Host "Press Enter to continue..."; return }
     $exitReportMenu = $false
     while (-not $exitReportMenu) {
         if (Get-Command Clear-HostAndDrawHeader -ErrorAction SilentlyContinue) { Clear-HostAndDrawHeader -Title "Manage My Reports" -User (Split-Path $UserReportsFolder -Leaf) }
         else { Clear-Host; Write-Host "--- Manage My Reports (User: $(Split-Path $UserReportsFolder -Leaf)) ---"; Write-Warning "Clear-HostAndDrawHeader function not found." }
+        
         $reportFiles = Get-ChildItem -Path $UserReportsFolder -Recurse -Filter "*.txt" -File | Sort-Object LastWriteTime -Descending
         Write-Host "`nAvailable Reports in '$UserReportsFolder':" -ForegroundColor Yellow
-        if ($reportFiles.Count -gt 0) { for ($i = 0; $i -lt $reportFiles.Count; $i++) { $relativePath = $reportFiles[$i].FullName.Substring($UserReportsFolder.Length).TrimStart('\/'); Write-Host (" [{0,2}] : {1} ({2:yyyy-MM-dd HH:mm})" -f ($i + 1), $relativePath, $reportFiles[$i].LastWriteTime) } }
+        if ($reportFiles.Count -gt 0) {
+            for ($i = 0; $i -lt $reportFiles.Count; $i++) {
+                $relativePath = $reportFiles[$i].FullName.Substring($UserReportsFolder.Length).TrimStart('\/')
+                Write-Host (" [{0,2}] : {1} ({2:yyyy-MM-dd HH:mm})" -f ($i + 1), $relativePath, $reportFiles[$i].LastWriteTime)
+            }
+        }
         else { Write-Host "  No reports found." -ForegroundColor Gray }
-        Write-Host "--------------------------------------" -ForegroundColor Blue; Write-Host "Options:" -ForegroundColor Yellow; Write-Host "  O. Open Report (Number)"; Write-Host "  D. Delete Report (Number)"; Write-Host "  X. Delete ALL Reports (Confirm)"; Write-Host "  E. Open Reports Folder"; Write-Host "  B. Back"; Write-Host "--------------------------------------" -ForegroundColor Blue
+        
+        Write-Host "--------------------------------------" -ForegroundColor Blue
+        Write-Host "Options:" -ForegroundColor Yellow
+        Write-Host "  O. Open Report (Number)"
+        Write-Host "  D. Delete Report (Number)"
+        Write-Host "  X. Delete ALL Reports (Confirm)"
+        Write-Host "  E. Open Reports Folder"
+        Write-Host "  B. Back"
+        Write-Host "--------------------------------------" -ForegroundColor Blue
         $reportChoice = Read-Host "Enter your choice"
+        
         switch ($reportChoice.ToUpper()) {
-            'O' { if ($reportFiles.Count -eq 0) { Write-Warning "No reports."; Read-Host "..."; continue }; $idxInput = Read-Host "Report number to open"; if ($idxInput -match '^\d+$') { $idx = [int]$idxInput - 1; if ($idx -ge 0 -and $idx -lt $reportFiles.Count) { Write-Host "Opening '$($reportFiles[$idx].Name)'..."; if (Get-Command Open-FileExplorer -ErrorAction SilentlyContinue) { Open-FileExplorer -Path $reportFiles[$idx].FullName } else { Write-Warning "Open-FileExplorer not found." } } else { Write-Warning "Invalid number." } } else { Write-Warning "Invalid input." }; Read-Host "`nPress Enter..." }
-            'D' { if ($reportFiles.Count -eq 0) { Write-Warning "No reports."; Read-Host "..."; continue }; $idxInput = Read-Host "Report number to DELETE"; if ($idxInput -match '^\d+$') { $idx = [int]$idxInput - 1; if ($idx -ge 0 -and $idx -lt $reportFiles.Count) { $fileToDelete = $reportFiles[$idx]; $confirm = Read-Host "DELETE '$($fileToDelete.Name)'? (Y/N)"; if ($confirm -match '^[Yy]$') { try { Remove-Item -Path $fileToDelete.FullName -Force -ErrorAction Stop; Write-Host "'$($fileToDelete.Name)' deleted." -ForegroundColor Green } catch { Write-Error "Failed delete: $($_.Exception.Message)" } } else { Write-Host "Cancelled." } } else { Write-Warning "Invalid number." } } else { Write-Warning "Invalid input." }; Read-Host "`nPress Enter..." }
-            'X' { if ($reportFiles.Count -eq 0) { Write-Warning "No reports."; Read-Host "..."; continue }; $confirm = Read-Host "DELETE ALL $($reportFiles.Count) REPORTS? Type 'YES' to confirm."; if ($confirm -eq 'YES') { Write-Host "Deleting..." -ForegroundColor Red; $deletedCount = 0; $failCount = 0; foreach ($file in $reportFiles) { try { Remove-Item -Path $file.FullName -Force -ErrorAction Stop; $deletedCount++ } catch { Write-Error "Failed delete '$($file.Name)': $($_.Exception.Message)"; $failCount++ } }; Write-Host "Deleted ${deletedCount}. Failed ${failCount}." -ForegroundColor Yellow } else { Write-Host "Cancelled." }; Read-Host "`nPress Enter..." }
-            'E' { if (Get-Command Open-FileExplorer -ErrorAction SilentlyContinue) { Open-FileExplorer -Path $UserReportsFolder } else { Write-Warning "Open-FileExplorer not found." }; Read-Host "`nPress Enter..." }
+            'O' {
+                if ($reportFiles.Count -eq 0) { Write-Warning "No reports to open."; Read-Host "Press Enter..."; continue }
+                $idxInput = Read-Host "Report number to open"
+                if ($idxInput -match '^\d+$') {
+                    $idx = [int]$idxInput - 1
+                    if ($idx -ge 0 -and $idx -lt $reportFiles.Count) {
+                        Write-Host "Opening '$($reportFiles[$idx].Name)'..."
+                        if (Get-Command Open-FileExplorer -ErrorAction SilentlyContinue) {
+                            Open-FileExplorer -Path $reportFiles[$idx].FullName
+                        } else { Write-Warning "Open-FileExplorer function not found." }
+                    } else { Write-Warning "Invalid report number." }
+                } else { Write-Warning "Invalid input. Please enter a number." }
+                Read-Host "`nPress Enter to continue..."
+            }
+            'D' {
+                if ($reportFiles.Count -eq 0) { Write-Warning "No reports to delete."; Read-Host "Press Enter..."; continue }
+                $idxInput = Read-Host "Report number to DELETE"
+                if ($idxInput -match '^\d+$') {
+                    $idx = [int]$idxInput - 1
+                    if ($idx -ge 0 -and $idx -lt $reportFiles.Count) {
+                        $fileToDelete = $reportFiles[$idx]
+                        $confirm = Read-Host "Are you sure you want to DELETE '$($fileToDelete.Name)'? (Y/N)"
+                        if ($confirm -match '^[Yy]$') {
+                            try {
+                                Remove-Item -Path $fileToDelete.FullName -Force -ErrorAction Stop
+                                Write-Host "'$($fileToDelete.Name)' deleted successfully." -ForegroundColor Green
+                            } catch { Write-Error "Failed to delete report: $($_.Exception.Message)" }
+                        } else { Write-Host "Deletion cancelled." }
+                    } else { Write-Warning "Invalid report number." }
+                } else { Write-Warning "Invalid input. Please enter a number." }
+                Read-Host "`nPress Enter to continue..."
+            }
+            'X' {
+                if ($reportFiles.Count -eq 0) { Write-Warning "No reports to delete."; Read-Host "Press Enter..."; continue }
+                $confirm = Read-Host "Are you sure you want to DELETE ALL $($reportFiles.Count) REPORTS? This cannot be undone. Type 'YES' to confirm."
+                if ($confirm -eq 'YES') {
+                    Write-Host "Deleting all reports..." -ForegroundColor Red
+                    $deletedCount = 0; $failCount = 0
+                    foreach ($file in $reportFiles) {
+                        try {
+                            Remove-Item -Path $file.FullName -Force -ErrorAction Stop
+                            $deletedCount++
+                        } catch {
+                            Write-Error "Failed to delete '$($file.Name)': $($_.Exception.Message)"
+                            $failCount++
+                        }
+                    }
+                    Write-Host "Deletion complete. Deleted: ${deletedCount}. Failed: ${failCount}." -ForegroundColor Yellow
+                } else { Write-Host "Deletion cancelled." }
+                Read-Host "`nPress Enter to continue..."
+            }
+            'E' {
+                if (Get-Command Open-FileExplorer -ErrorAction SilentlyContinue) {
+                    Open-FileExplorer -Path $UserReportsFolder
+                } else { Write-Warning "Open-FileExplorer function not found." }
+                Read-Host "`nPress Enter to continue..."
+            }
             'B' { $exitReportMenu = $true }
-            Default { Write-Warning "Invalid choice."; Read-Host "Press Enter..."; }
+            Default { Write-Warning "Invalid choice."; Read-Host "Press Enter to continue..."; }
         }
     }
 }
@@ -47,13 +113,14 @@ function Run-CrossCarrierASPAnalysisGUI {
     param(
         [Parameter(Mandatory)][hashtable]$BrokerProfile,
         [Parameter(Mandatory)][hashtable]$SelectedCustomerProfile,
-        [Parameter(Mandatory)][string]$ReportsBaseFolder,
-        [Parameter(Mandatory)][string]$UserReportsFolder,
+        [Parameter(Mandatory)][string]$ReportsBaseFolder, # Not directly used for path, but good for context
+        [Parameter(Mandatory)][string]$UserReportsFolder, # User-specific report folder
         [Parameter(Mandatory)][hashtable]$AllCentralKeys,
         [Parameter(Mandatory)][hashtable]$AllSAIAKeys,
         [Parameter(Mandatory)][hashtable]$AllRLKeys,
-        [Parameter(Mandatory)][hashtable]$AllAverittKeys, 
-        [Parameter(Mandatory)][decimal]$DesiredASPValue, # Parameter for desired ASP
+        [Parameter(Mandatory)][hashtable]$AllAverittKeys,
+        [Parameter(Mandatory)][hashtable]$AllAAACooperKeys, # Added for AAA Cooper
+        [Parameter(Mandatory)][decimal]$DesiredASPValue,
         [Parameter(Mandatory)][string]$CsvFilePath,
         [Parameter(Mandatory=$false)][bool]$ApplyMargins = $false,
         [Parameter(Mandatory=$false)][bool]$ASPFromHistory = $false
@@ -67,36 +134,35 @@ function Run-CrossCarrierASPAnalysisGUI {
     $analysisTitle = if ($ASPFromHistory) { "Margin Analysis Based on History ASP for $($SelectedCustomerProfile.CustomerName)" } else { "ASP Cross-Carrier Margin Analysis for $($SelectedCustomerProfile.CustomerName)" }
     $reportTypeSuffix = if ($ASPFromHistory) { "MarginByHistory" } else { "MarginForASP" }
 
-    # --- Data Loading (Needs all columns for all carriers) ---
+    # --- Data Loading for all relevant carriers ---
     Write-Host "`nLoading and normalizing data for all carriers from '$CsvFilePath'..." -ForegroundColor Gray
-    if (-not (Get-Command Load-And-Normalize-CentralData -ErrorAction SilentlyContinue) -or `
-        -not (Get-Command Load-And-Normalize-SAIAData -ErrorAction SilentlyContinue) -or `
-        -not (Get-Command Load-And-Normalize-RLData -ErrorAction SilentlyContinue) -or `
-        -not (Get-Command Load-And-Normalize-AverittData -ErrorAction SilentlyContinue) ) { Write-Error "Required data normalization function(s) not found."; return $null }
-
-    $centralShipmentData = @(); $saiaShipmentData = @(); $rlShipmentData = @(); $averittShipmentData = @()
+    # Ensure all normalization functions are loaded
+    $requiredNormFuncs = @(
+        "Load-And-Normalize-CentralData", "Load-And-Normalize-SAIAData",
+        "Load-And-Normalize-RLData", "Load-And-Normalize-AverittData", "Load-And-Normalize-AAACooperData"
+    )
+    foreach ($funcName in $requiredNormFuncs) {
+        if (-not (Get-Command $funcName -ErrorAction SilentlyContinue)) {
+            Write-Error "Required data normalization function '$funcName' not found."
+            return $null
+        }
+    }
 
     $centralShipmentData = Load-And-Normalize-CentralData -CsvPath $CsvFilePath
     $saiaShipmentData = Load-And-Normalize-SAIAData -CsvPath $CsvFilePath
     $rlShipmentData = Load-And-Normalize-RLData -CsvPath $CsvFilePath
-    $averittShipmentData = Load-And-Normalize-AverittData -CsvPath $CsvFilePath 
+    $averittShipmentData = Load-And-Normalize-AverittData -CsvPath $CsvFilePath
+    $aaaCooperShipmentData = Load-And-Normalize-AAACooperData -CsvPath $CsvFilePath
 
-    if ($null -eq $centralShipmentData -or $null -eq $saiaShipmentData -or $null -eq $rlShipmentData -or $null -eq $averittShipmentData ) {
+    # Check if any normalization failed critically
+    if (($null -eq $centralShipmentData) -or ($null -eq $saiaShipmentData) -or ($null -eq $rlShipmentData) -or ($null -eq $averittShipmentData) -or ($null -eq $aaaCooperShipmentData)) {
          Write-Error "Failed to load/normalize data for one or more carriers (function returned null)."
-         if ($null -eq $centralShipmentData) { Write-Warning "Central data loading returned null." }
-         if ($null -eq $saiaShipmentData) { Write-Warning "SAIA data loading returned null." }
-         if ($null -eq $rlShipmentData) { Write-Warning "R+L data loading returned null." }
-         if ($null -eq $averittShipmentData) { Write-Warning "Averitt data loading returned null."} 
+         # Add specific warnings for which carrier failed if desired
          return $null
     }
-
-    $totalRows = 0
-    if($rlShipmentData.Count -gt $totalRows) { $totalRows = $rlShipmentData.Count }
-    if($saiaShipmentData.Count -gt $totalRows) { $totalRows = $saiaShipmentData.Count }
-    if($centralShipmentData.Count -gt $totalRows) { $totalRows = $centralShipmentData.Count }
-    if($averittShipmentData.Count -gt $totalRows) { $totalRows = $averittShipmentData.Count }
-
-
+    
+    $allShipmentDataSets = @($centralShipmentData, $saiaShipmentData, $rlShipmentData, $averittShipmentData, $aaaCooperShipmentData)
+    $totalRows = ($allShipmentDataSets | ForEach-Object { $_.Count } | Measure-Object -Maximum).Maximum
     if ($totalRows -eq 0) { Write-Warning "CSV resulted in 0 processable rows after normalization for all carriers."; return $null }
     Write-Host " -> Data loaded and normalized (target ${totalRows} rows, individual counts may vary)." -ForegroundColor Green
 
@@ -105,134 +171,95 @@ function Run-CrossCarrierASPAnalysisGUI {
     $permittedCentral = Get-PermittedKeys -AllKeys $AllCentralKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedCentralKeys
     $permittedSAIA = Get-PermittedKeys -AllKeys $AllSAIAKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedSAIAKeys
     $permittedRL = Get-PermittedKeys -AllKeys $AllRLKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedRLKeys
-    $permittedAveritt = Get-PermittedKeys -AllKeys $AllAverittKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedAverittKeys 
+    $permittedAveritt = Get-PermittedKeys -AllKeys $AllAverittKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedAverittKeys
+    $permittedAAACooper = Get-PermittedKeys -AllKeys $AllAAACooperKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedAAACooperKeys
 
-    if ($permittedCentral.Count -eq 0 -and $permittedSAIA.Count -eq 0 -and $permittedRL.Count -eq 0 -and $permittedAveritt.Count -eq 0) { Write-Warning "No permitted keys/accounts found for Customer '$($SelectedCustomerProfile.CustomerName)'. Analysis cannot proceed."; return $null }
+    if ($permittedCentral.Count -eq 0 -and $permittedSAIA.Count -eq 0 -and $permittedRL.Count -eq 0 -and $permittedAveritt.Count -eq 0 -and $permittedAAACooper.Count -eq 0) {
+        Write-Warning "No permitted keys/accounts found for Customer '$($SelectedCustomerProfile.CustomerName)'. Analysis cannot proceed."
+        return $null
+    }
 
     # --- Initialize Results Storage ---
     $aspResults = [System.Collections.Generic.List[object]]::new()
-    $overallSkippedCount = 0
-    if (-not (Get-Command Invoke-CentralTransportApi -ErrorAction SilentlyContinue) -or `
-        -not (Get-Command Invoke-SAIAApi -ErrorAction SilentlyContinue) -or `
-        -not (Get-Command Invoke-RLApi -ErrorAction SilentlyContinue) -or `
-        -not (Get-Command Invoke-AverittApi -ErrorAction SilentlyContinue)) { Write-Error "Required API invocation function(s) not found."; return $null }
-
-    # --- Process Each Carrier ---
+    $script:overallSkippedCount = 0 # Initialize in script scope to be accessible by helper
+    # Ensure all API invocation functions are loaded
+    $requiredApiFuncs = @(
+        "Invoke-CentralTransportApi", "Invoke-SAIAApi", "Invoke-RLApi",
+        "Invoke-AverittApi", "Invoke-AAACooperApi"
+    )
+    foreach ($funcName in $requiredApiFuncs) {
+        if (-not (Get-Command $funcName -ErrorAction SilentlyContinue)) {
+            Write-Error "Required API invocation function '$funcName' not found."
+            return $null
+        }
+    }
+    
     $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue';
     try {
-        # Process Central Keys
-        if ($permittedCentral.Count -gt 0 -and $centralShipmentData.Count -gt 0) {
-            Write-Host "`n--- Processing Central Transport Accounts for $($SelectedCustomerProfile.CustomerName) ---" -ForegroundColor Yellow
-            foreach ($keyName in ($permittedCentral.Keys | Sort-Object)) {
-                $keyData = $permittedCentral[$keyName]; Write-Host "Processing Account: ${keyName} (using $($centralShipmentData.Count) Central-normalized rows)..." -ForegroundColor Cyan; $totalCostValue = 0.0; $processedCount = 0; $apiSkippedCount = 0
-                $carrierTotalRows = $centralShipmentData.Count
-                for ($i = 0; $i -lt $carrierTotalRows; $i++) {
-                    $shipment = $centralShipmentData[$i];
-                    $apiParams = @{ KeyData = $keyData; ShipmentData = $shipment }
-                    $costValue = Invoke-CentralTransportApi @apiParams
-                    if ($costValue -eq $null) { $apiSkippedCount++; continue }
-                    $processedCount++; $totalCostValue += $costValue
-                }
-                $avgCost = 0.0; $reqMargin = $null;
-                if ($processedCount -gt 0) {
-                    $avgCost = $totalCostValue / $processedCount
-                    if ($DesiredASPValue -ne 0) {
-                        try { $reqMargin = (($DesiredASPValue - $avgCost) / $DesiredASPValue) * 100.0 }
-                        catch { Write-Warning "Error calculating margin for ${keyName}: $($_.Exception.Message)"}
-                    }
-                }
-                $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = 'Central'; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount });
-                if ($processedCount -gt 0) { Write-Host " -> Avg Cost: $($avgCost.ToString('C2')). Required Margin: $(if($reqMargin -ne $null){'{0:N2}%' -f $reqMargin}else{'N/A'}) (${processedCount} processed, ${apiSkippedCount} API skips)" -ForegroundColor Green } else { Write-Warning " -> No shipments processed successfully via API for Central account '${keyName}'. (${apiSkippedCount} API skips)"; }
-                $overallSkippedCount += $apiSkippedCount
-            }
-        } elseif ($permittedCentral.Count -gt 0 -and $centralShipmentData.Count -eq 0) {
-            Write-Warning "`nNo processable Central Transport data rows from CSV for $($SelectedCustomerProfile.CustomerName), though permitted keys exist."
-        } else { Write-Host "`nNo permitted Central Transport accounts for $($SelectedCustomerProfile.CustomerName)." -ForegroundColor Gray }
+        # Helper function to process a single carrier
+        function Process-CarrierASP {
+            param (
+                [string]$CarrierName,
+                [hashtable]$PermittedKeys,
+                [array]$ShipmentDataset,
+                [hashtable]$AllCarrierKeys, # For margin update later
+                [string]$CarrierKeyFolderPath # For margin update later
+            )
+            if ($PermittedKeys.Count -gt 0 -and $ShipmentDataset.Count -gt 0) {
+                Write-Host "`n--- Processing $CarrierName Accounts for $($SelectedCustomerProfile.CustomerName) ---" -ForegroundColor Yellow
+                foreach ($keyName in ($PermittedKeys.Keys | Sort-Object)) {
+                    $keyData = $PermittedKeys[$keyName]
+                    Write-Host "Processing Account: ${keyName} (using $($ShipmentDataset.Count) ${CarrierName}-normalized rows)..." -ForegroundColor Cyan
+                    $totalCostValue = 0.0; $processedCount = 0; $apiSkippedCount = 0
+                    
+                    foreach ($shipment in $ShipmentDataset) {
+                        $costValue = $null
+                        # Dynamically call the correct Invoke function
+                        $invokeFunctionName = "Invoke-${CarrierName}Api"
+                        # Ensure correct function name for AAA Cooper if it differs (e.g., Invoke-AAACooperApi)
+                        # This assumes Invoke-AAACooperApi exists and is loaded.
+                        
+                        # Construct parameters for the Invoke function
+                        $invokeParams = @{ KeyData = $keyData }
+                        if ($CarrierName -eq "Central") { $invokeParams.ShipmentData = $shipment }
+                        elseif ($CarrierName -eq "SAIA") { $invokeParams.OriginZip = $shipment.OriginZip; $invokeParams.DestinationZip = $shipment.DestinationZip; $invokeParams.OriginCity = $shipment.OriginCity; $invokeParams.OriginState = $shipment.OriginState; $invokeParams.DestinationCity = $shipment.DestinationCity; $invokeParams.DestinationState = $shipment.DestinationState; $invokeParams.Details = $shipment.details }
+                        elseif ($CarrierName -eq "RL") { $invokeParams.OriginZip = $shipment.OriginZip; $invokeParams.DestinationZip = $shipment.DestinationZip; $invokeParams.Commodities = $shipment.Commodities; $invokeParams.ShipmentDetails = $shipment }
+                        elseif ($CarrierName -eq "Averitt") { $invokeParams.ShipmentData = $shipment }
+                        elseif ($CarrierName -eq "AAACooper") { $invokeParams.ShipmentData = $shipment } # Pass the normalized shipment data
+                        else { Write-Warning "Invoke function parameters not defined for $CarrierName"; $apiSkippedCount++; continue }
 
-        # Process SAIA Keys
-        if ($permittedSAIA.Count -gt 0 -and $saiaShipmentData.Count -gt 0) {
-            Write-Host "`n--- Processing SAIA Accounts for $($SelectedCustomerProfile.CustomerName) ---" -ForegroundColor Yellow
-            foreach ($keyName in ($permittedSAIA.Keys | Sort-Object)) {
-                $keyData = $permittedSAIA[$keyName]; Write-Host "Processing Account: ${keyName} (using $($saiaShipmentData.Count) SAIA-normalized rows)..." -ForegroundColor Cyan; $totalCostValue = 0.0; $processedCount = 0; $apiSkippedCount = 0
-                $carrierTotalRows = $saiaShipmentData.Count
-                for ($i = 0; $i -lt $carrierTotalRows; $i++) {
-                    $shipment = $saiaShipmentData[$i];
-                    $costValue = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Details $shipment.details -KeyData $keyData
-                    if ($costValue -eq $null) { $apiSkippedCount++; continue }
-                    $processedCount++; $totalCostValue += $costValue
-                }
-                $avgCost = 0.0; $reqMargin = $null;
-                if ($processedCount -gt 0) {
-                    $avgCost = $totalCostValue / $processedCount
-                    if ($DesiredASPValue -ne 0) {
-                        try { $reqMargin = (($DesiredASPValue - $avgCost) / $DesiredASPValue) * 100.0 }
-                        catch {Write-Warning "Error calculating margin for ${keyName}: $($_.Exception.Message)"}
-                    }
-                }
-                $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = 'SAIA'; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount });
-                if ($processedCount -gt 0) { Write-Host " -> Avg Cost: $($avgCost.ToString('C2')). Required Margin: $(if($reqMargin -ne $null){'{0:N2}%' -f $reqMargin}else{'N/A'}) (${processedCount} processed, ${apiSkippedCount} API skips)" -ForegroundColor Green } else { Write-Warning " -> No shipments processed successfully via API for SAIA account '${keyName}'. (${apiSkippedCount} API skips)"; }
-                $overallSkippedCount += $apiSkippedCount
-            }
-        } elseif ($permittedSAIA.Count -gt 0 -and $saiaShipmentData.Count -eq 0) {
-            Write-Warning "`nNo processable SAIA data rows from CSV for $($SelectedCustomerProfile.CustomerName), though permitted keys exist."
-        } else { Write-Host "`nNo permitted SAIA accounts for $($SelectedCustomerProfile.CustomerName)." -ForegroundColor Gray }
+                        try {
+                            $costValue = & $invokeFunctionName @invokeParams
+                        } catch { Write-Warning "Error calling $invokeFunctionName for ${keyName}: $($_.Exception.Message)"; $costValue = $null }
 
-        # Process R+L Keys
-        if ($permittedRL.Count -gt 0 -and $rlShipmentData.Count -gt 0) {
-            Write-Host "`n--- Processing R+L Accounts for $($SelectedCustomerProfile.CustomerName) ---" -ForegroundColor Yellow
-            foreach ($keyName in ($permittedRL.Keys | Sort-Object)) {
-                $keyData = $permittedRL[$keyName]; Write-Host "Processing Account: ${keyName} (using $($rlShipmentData.Count) R+L-normalized rows)..." -ForegroundColor Cyan; $totalCostValue = 0.0; $processedCount = 0; $apiSkippedCount = 0
-                $carrierTotalRows = $rlShipmentData.Count
-                for ($i = 0; $i -lt $carrierTotalRows; $i++) {
-                    $shipment = $rlShipmentData[$i];
-                    $costValue = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Commodities $shipment.Commodities -KeyData $keyData -ShipmentDetails $shipment
-                    if ($costValue -eq $null) { $apiSkippedCount++; continue }
-                    $processedCount++; $totalCostValue += $costValue
-                }
-                $avgCost = 0.0; $reqMargin = $null;
-                if ($processedCount -gt 0) {
-                    $avgCost = $totalCostValue / $processedCount
-                    if ($DesiredASPValue -ne 0) {
-                        try { $reqMargin = (($DesiredASPValue - $avgCost) / $DesiredASPValue) * 100.0 }
-                        catch {Write-Warning "Error calculating margin for ${keyName}: $($_.Exception.Message)"}
-                    }
-                }
-                $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = 'R+L'; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount });
-                if ($processedCount -gt 0) { Write-Host " -> Avg Cost: $($avgCost.ToString('C2')). Required Margin: $(if($reqMargin -ne $null){'{0:N2}%' -f $reqMargin}else{'N/A'}) (${processedCount} processed, ${apiSkippedCount} API skips)" -ForegroundColor Green } else { Write-Warning " -> No shipments processed successfully via API for R+L account '${keyName}'. (${apiSkippedCount} API skips)"; }
-                $overallSkippedCount += $apiSkippedCount
-            }
-        } elseif ($permittedRL.Count -gt 0 -and $rlShipmentData.Count -eq 0) {
-            Write-Warning "`nNo processable R+L data rows from CSV for $($SelectedCustomerProfile.CustomerName), though permitted keys exist."
-        } else { Write-Host "`nNo permitted R+L accounts for $($SelectedCustomerProfile.CustomerName)." -ForegroundColor Gray }
+                        if ($costValue -eq $null) { $apiSkippedCount++; continue }
+                        $processedCount++; $totalCostValue += $costValue
+                    } # End foreach shipment
 
-        # Process Averitt Keys
-        if ($permittedAveritt.Count -gt 0 -and $averittShipmentData.Count -gt 0) {
-            Write-Host "`n--- Processing Averitt Accounts for $($SelectedCustomerProfile.CustomerName) ---" -ForegroundColor Yellow
-            foreach ($keyName in ($permittedAveritt.Keys | Sort-Object)) {
-                $keyData = $permittedAveritt[$keyName]; Write-Host "Processing Account: ${keyName} (using $($averittShipmentData.Count) Averitt-normalized rows)..." -ForegroundColor Cyan; $totalCostValue = 0.0; $processedCount = 0; $apiSkippedCount = 0
-                $carrierTotalRows = $averittShipmentData.Count
-                for ($i = 0; $i -lt $carrierTotalRows; $i++) {
-                    $shipment = $averittShipmentData[$i]; 
-                    $costValue = Invoke-AverittApi -KeyData $keyData -ShipmentData $shipment
-                    if ($costValue -eq $null) { $apiSkippedCount++; continue }
-                    $processedCount++; $totalCostValue += $costValue
-                }
-                $avgCost = 0.0; $reqMargin = $null;
-                if ($processedCount -gt 0) {
-                    $avgCost = $totalCostValue / $processedCount
-                    if ($DesiredASPValue -ne 0) {
-                        try { $reqMargin = (($DesiredASPValue - $avgCost) / $DesiredASPValue) * 100.0 }
-                        catch {Write-Warning "Error calculating margin for ${keyName}: $($_.Exception.Message)"}
+                    $avgCost = 0.0; $reqMargin = $null;
+                    if ($processedCount -gt 0) {
+                        $avgCost = $totalCostValue / $processedCount
+                        if ($DesiredASPValue -ne 0) {
+                            try { $reqMargin = (($DesiredASPValue - $avgCost) / $DesiredASPValue) * 100.0 }
+                            catch { Write-Warning "Error calculating margin for ${keyName} ($CarrierName): $($_.Exception.Message)"}
+                        }
                     }
-                }
-                $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = 'Averitt'; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount });
-                if ($processedCount -gt 0) { Write-Host " -> Avg Cost: $($avgCost.ToString('C2')). Required Margin: $(if($reqMargin -ne $null){'{0:N2}%' -f $reqMargin}else{'N/A'}) (${processedCount} processed, ${apiSkippedCount} API skips)" -ForegroundColor Green } else { Write-Warning " -> No shipments processed successfully via API for Averitt account '${keyName}'. (${apiSkippedCount} API skips)"; }
-                $overallSkippedCount += $apiSkippedCount
-            }
-        } elseif ($permittedAveritt.Count -gt 0 -and $averittShipmentData.Count -eq 0) {
-            Write-Warning "`nNo processable Averitt data rows from CSV for $($SelectedCustomerProfile.CustomerName), though permitted keys exist."
-        } else { Write-Host "`nNo permitted Averitt accounts for $($SelectedCustomerProfile.CustomerName)." -ForegroundColor Gray }
+                    $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = $CarrierName; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount; KeysFolderPath = $CarrierKeyFolderPath; AllKeysRef = $AllCarrierKeys }); # Store folder path for margin update
+                    if ($processedCount -gt 0) { Write-Host " -> Avg Cost: $($avgCost.ToString('C2')). Required Margin: $(if($reqMargin -ne $null){'{0:N2}%' -f $reqMargin}else{'N/A'}) (${processedCount} processed, ${apiSkippedCount} API skips)" -ForegroundColor Green }
+                    else { Write-Warning " -> No shipments processed successfully via API for $CarrierName account '${keyName}'. (${apiSkippedCount} API skips)"; }
+                    $script:overallSkippedCount += $apiSkippedCount # Use script scope for overallSkippedCount
+                } # End foreach key
+            } elseif ($PermittedKeys.Count -gt 0 -and $ShipmentDataset.Count -eq 0) {
+                Write-Warning "`nNo processable $CarrierName data rows from CSV for $($SelectedCustomerProfile.CustomerName), though permitted keys exist."
+            } else { Write-Host "`nNo permitted $CarrierName accounts for $($SelectedCustomerProfile.CustomerName)." -ForegroundColor Gray }
+        } # End Process-CarrierASP
 
+        # Process each carrier
+        Process-CarrierASP -CarrierName "Central" -PermittedKeys $permittedCentral -ShipmentDataset $centralShipmentData -AllCarrierKeys $AllCentralKeys -CarrierKeyFolderPath $script:centralKeysFolderPath
+        Process-CarrierASP -CarrierName "SAIA" -PermittedKeys $permittedSAIA -ShipmentDataset $saiaShipmentData -AllCarrierKeys $AllSAIAKeys -CarrierKeyFolderPath $script:saiaKeysFolderPath
+        Process-CarrierASP -CarrierName "RL" -PermittedKeys $permittedRL -ShipmentDataset $rlShipmentData -AllCarrierKeys $AllRLKeys -CarrierKeyFolderPath $script:rlKeysFolderPath
+        Process-CarrierASP -CarrierName "Averitt" -PermittedKeys $permittedAveritt -ShipmentDataset $averittShipmentData -AllCarrierKeys $AllAverittKeys -CarrierKeyFolderPath $script:averittKeysFolderPath
+        Process-CarrierASP -CarrierName "AAACooper" -PermittedKeys $permittedAAACooper -ShipmentDataset $aaaCooperShipmentData -AllCarrierKeys $AllAAACooperKeys -CarrierKeyFolderPath $script:aaaCooperKeysFolderPath # Process AAA Cooper
 
     } finally {
         $VerbosePreference = $CurrentVerbosePreference
@@ -250,9 +277,7 @@ function Run-CrossCarrierASPAnalysisGUI {
         $formattedTableOutput = ($aspResults | Sort-Object -Property Carrier, Account | Format-Table Carrier, Account, @{N='Avg Cost';E={if ($_.AvgCost -ne $null) {$_.AvgCost.ToString("C2")} else {'N/A'}}}, @{N='Required Margin %';E={if($_.RequiredMargin -ne $null){$_.RequiredMargin.ToString("N2") + "%"}else{"N/A"}}}, Processed, @{N='API Skips';E={$_.Skipped}} -AutoSize | Out-String)
         if ($null -ne $formattedTableOutput) {
             $linesToAdd = $formattedTableOutput.ToString().TrimEnd("`r", "`n").Split([Environment]::NewLine)
-            foreach($lineToAdd in $linesToAdd){
-                $reportContent.Add($lineToAdd)
-            }
+            foreach($lineToAdd in $linesToAdd){ $reportContent.Add($lineToAdd) }
         }
     } else { $reportContent.Add("No results generated (no permitted keys or no data processed).") }
     $reportContent.Add("-------------------------------------------------")
@@ -266,28 +291,22 @@ function Run-CrossCarrierASPAnalysisGUI {
             if ($result.Processed -eq 0) {
                 $reportContent.Add("Skipping margin update for '$($result.Account)': No shipments were processed for cost calculation."); $updateSkippedCount++; continue
             }
-            $tariffName = $result.Account; $keysFolderPath = $null; $allKeysToUse = $null
-
-            if ($result.RequiredMargin -eq $null -or -not ($result.RequiredMargin -is [double])) { $reportContent.Add("Skipping '${tariffName}': Invalid required margin calculation."); $updateSkippedCount++; continue }
+            if ($result.RequiredMargin -eq $null -or -not ($result.RequiredMargin -is [double])) { $reportContent.Add("Skipping '$($result.Account)': Invalid required margin calculation."); $updateSkippedCount++; continue }
+            
             $newMargin = [math]::Round($result.RequiredMargin, 1)
-            if ($newMargin -lt 0 -or $newMargin -ge 100) { $reportContent.Add("Skipping '${tariffName}': Calculated margin ${newMargin}% outside valid range (0-99.9)."); $updateInvalidMarginCount++; continue }
+            if ($newMargin -lt 0 -or $newMargin -ge 100) { $reportContent.Add("Skipping '$($result.Account)': Calculated margin ${newMargin}% outside valid range (0-99.9)."); $updateInvalidMarginCount++; continue }
 
-            switch ($result.Carrier) {
-                'Central' { $keysFolderPath = $script:centralKeysFolderPath; $allKeysToUse = $AllCentralKeys }
-                'SAIA'    { $keysFolderPath = $script:saiaKeysFolderPath; $allKeysToUse = $AllSAIAKeys }
-                'R+L'     { $keysFolderPath = $script:rlKeysFolderPath; $allKeysToUse = $AllRLKeys }
-                'Averitt' { $keysFolderPath = $script:averittKeysFolderPath; $allKeysToUse = $AllAverittKeys } 
-                default   { Write-Warning "Unknown carrier '$($result.Carrier)' for margin update."; $updateFailCount++; continue }
+            if ([string]::IsNullOrWhiteSpace($result.KeysFolderPath) -or ($null -eq $result.AllKeysRef)) {
+                Write-Warning "Keys folder path or AllKeys reference not found for '$($result.Account)' ($($result.Carrier)). Cannot update margin."
+                $updateFailCount++; continue
             }
-            if ([string]::IsNullOrWhiteSpace($keysFolderPath)) { Write-Error "Keys folder path not determined for '$($result.Carrier)'."; $updateFailCount++; continue}
-            if ($null -eq $allKeysToUse) { Write-Error "Source AllKeys hashtable for carrier '$($result.Carrier)' is null."; $updateFailCount++; continue}
-
             if (-not (Get-Command Update-TariffMargin -ErrorAction SilentlyContinue)) { Write-Error "Update-TariffMargin function not found!"; $updateFailCount++; continue }
 
-            Write-Host "Attempting to update margin for '${tariffName}' (Carrier: $($result.Carrier)) to ${newMargin} % using folder '${keysFolderPath}'."
-            $updateAttemptSuccess = Update-TariffMargin -TariffName $tariffName -AllKeysHashtable $allKeysToUse -KeysFolderPath $keysFolderPath -NewMarginPercent $newMargin
-            if ($updateAttemptSuccess) { $reportContent.Add("Success: '${tariffName}' updated to ${newMargin}%."); $updateSuccessCount++ }
-            else { $reportContent.Add("FAILED update for '${tariffName}'. Check console/logs."); $updateFailCount++ }
+            Write-Host "Attempting to update margin for '$($result.Account)' (Carrier: $($result.Carrier)) to ${newMargin} % using folder '$($result.KeysFolderPath)'."
+            $updateAttemptSuccess = Update-TariffMargin -TariffName $result.Account -AllKeysHashtable $result.AllKeysRef -KeysFolderPath $result.KeysFolderPath -NewMarginPercent $newMargin
+            
+            if ($updateAttemptSuccess) { $reportContent.Add("Success: '$($result.Account)' updated to ${newMargin}%."); $updateSuccessCount++ }
+            else { $reportContent.Add("FAILED update for '$($result.Account)'. Check console/logs."); $updateFailCount++ }
         }
          $reportContent.Add("----------------------------------"); $reportContent.Add("Update Counts - Success: ${updateSuccessCount}, Failed: ${updateFailCount}, Skipped (No Data/Calc): ${updateSkippedCount}, Skipped (Invalid Range): ${updateInvalidMarginCount}")
     } elseif ($ApplyMargins) {
@@ -296,10 +315,9 @@ function Run-CrossCarrierASPAnalysisGUI {
 
     # --- Save Report ---
     if (-not (Get-Command Get-ReportPath -ErrorAction SilentlyContinue)) { Write-Error "Get-ReportPath function not found."; return $null }
-
-    $customerNameSafe = $SelectedCustomerProfile.CustomerName -replace '[^a-zA-Z0-9.-]', '_'
+    $customerNameSafe = $SelectedCustomerProfile.CustomerName -replace '[^a-zA-Z0-9.-]', '_' # Sanitize customer name for filename
     $reportFilePath = Get-ReportPath -BaseDir $UserReportsFolder -Username $BrokerProfile.Username -Carrier 'CrossCarrier' -ReportType $reportTypeSuffix -FilePrefix $customerNameSafe
-
+    
     if ($reportFilePath) {
         try { $reportContent | Out-File -FilePath $reportFilePath -Encoding UTF8 -Force -ErrorAction Stop; Write-Host "`nReport saved: $reportFilePath" -ForegroundColor Green; return $reportFilePath }
         catch { Write-Error "Failed to save report: $($_.Exception.Message)"; return $null }
@@ -316,7 +334,8 @@ function Run-MarginsByHistoryAnalysisGUI {
         [Parameter(Mandatory)][hashtable]$AllCentralKeys,
         [Parameter(Mandatory)][hashtable]$AllSAIAKeys,
         [Parameter(Mandatory)][hashtable]$AllRLKeys,
-        [Parameter(Mandatory)][hashtable]$AllAverittKeys, 
+        [Parameter(Mandatory)][hashtable]$AllAverittKeys,
+        [Parameter(Mandatory)][hashtable]$AllAAACooperKeys, # Added for AAA Cooper
         [Parameter(Mandatory)][string]$CsvFilePath,
         [Parameter(Mandatory=$false)][bool]$ApplyMargins = $false
     )
@@ -327,40 +346,42 @@ function Run-MarginsByHistoryAnalysisGUI {
         if(-not (Test-Path $CsvFilePath -PathType Leaf)) { Write-Error "History CSV file not found: '$CsvFilePath'"; return $null }
         $rawData = Import-Csv -Path $CsvFilePath -ErrorAction Stop
         if ($rawData.Count -eq 0) { Write-Warning "History CSV '$CsvFilePath' is empty."; return $null }
-
+        
         $header = $rawData[0].PSObject.Properties.Name
         $bookedPriceColumnName = $null
-        $potentialPriceColumns = @('Booked Price', 'BookedPrice', 'Price', 'FinalQuotedPrice', 'Average Selling Price', 'CustomerRate') 
+        # Expanded list of potential column names for booked price
+        $potentialPriceColumns = @('Booked Price', 'BookedPrice', 'Price', 'FinalQuotedPrice', 'Average Selling Price', 'CustomerRate', 'Sold For', 'Revenue')
         foreach($colName in $potentialPriceColumns){
             if($header -contains $colName){
                 $bookedPriceColumnName = $colName
                 break
             }
         }
-        if($null -eq $bookedPriceColumnName){ Write-Error "History CSV '$CsvFilePath' missing a recognizable booked price column (e.g., 'Booked Price', 'Price', 'CustomerRate')."; return $null }
-
+        if($null -eq $bookedPriceColumnName){ Write-Error "History CSV '$CsvFilePath' missing a recognizable booked price column (e.g., 'Booked Price', 'Price', 'CustomerRate', 'Sold For')."; return $null }
+        
         Write-Host "Calculating Average Booked Price from '$bookedPriceColumnName' column..." -ForegroundColor Gray
         foreach ($row in $rawData) {
             if ($row.$bookedPriceColumnName -ne $null -and $row.$bookedPriceColumnName -ne "") {
                 try {
-                    $priceString = $row.$bookedPriceColumnName -replace '[$,]'
+                    $priceString = $row.$bookedPriceColumnName -replace '[$,]' # Remove $ and ,
                     $bookedPrice = [decimal]$priceString
-                    if ($bookedPrice -gt 0) {
+                    if ($bookedPrice -gt 0) { # Ensure positive price
                         $totalBookedPrice += $bookedPrice
                         $validBookedPriceCount++
                     }
                 } catch {
-                    Write-Verbose "Skipping row due to conversion error for '${bookedPriceColumnName}': Value '$($row.$bookedPriceColumnName)'"
+                    Write-Verbose "Skipping row due to conversion error for '${bookedPriceColumnName}': Value '$($row.$bookedPriceColumnName)'" 
                 }
             }
         }
-        if ($validBookedPriceCount -eq 0) { Write-Warning "No valid positive '${bookedPriceColumnName}' values found in '${CsvFilePath}' after attempting conversion."; return $null }
+        if ($validBookedPriceCount -eq 0) { Write-Warning "No valid positive '${bookedPriceColumnName}' values found in '${CsvFilePath}' after attempting conversion."; return $null } 
         $averageBookedPrice = $totalBookedPrice / $validBookedPriceCount
-        Write-Host " -> Average Booked Price: $($averageBookedPrice.ToString('C2')) (${validBookedPriceCount} valid rows)" -ForegroundColor Green
-    } catch { Write-Error "Error processing History CSV '${CsvFilePath}': $($_.Exception.Message)"; return $null }
+        Write-Host " -> Average Booked Price: $($averageBookedPrice.ToString('C2')) (${validBookedPriceCount} valid rows)" -ForegroundColor Green 
+    } catch { Write-Error "Error processing History CSV '${CsvFilePath}': $($_.Exception.Message)"; return $null } 
 
     if (-not (Get-Command Run-CrossCarrierASPAnalysisGUI -ErrorAction SilentlyContinue)) { Write-Error "Run-CrossCarrierASPAnalysisGUI function not found."; return $null }
-
+    
+    # Pass all key collections to the CrossCarrierASPAnalysis function
     $reportPath = Run-CrossCarrierASPAnalysisGUI -BrokerProfile $BrokerProfile `
                                                  -SelectedCustomerProfile $SelectedCustomerProfile `
                                                  -ReportsBaseFolder $ReportsBaseFolder `
@@ -369,12 +390,13 @@ function Run-MarginsByHistoryAnalysisGUI {
                                                  -AllSAIAKeys $AllSAIAKeys `
                                                  -AllRLKeys $AllRLKeys `
                                                  -AllAverittKeys $AllAverittKeys `
+                                                 -AllAAACooperKeys $AllAAACooperKeys ` # Pass AAA Cooper keys
                                                  -DesiredASPValue $averageBookedPrice `
-                                                 -CsvFilePath $CsvFilePath `
+                                                 -CsvFilePath $CsvFilePath ` 
                                                  -ApplyMargins $ApplyMargins `
-                                                 -ASPFromHistory $true
+                                                 -ASPFromHistory $true 
 
-    return $reportPath
+    return $reportPath 
 }
 
-Write-Verbose "TMS Reports Functions loaded (GUI Refactored)."
+Write-Verbose "TMS Reports Functions loaded (GUI Refactored with AAA Cooper Integration)."
