@@ -49,16 +49,26 @@ function Run-SAIAComparisonReportGUI {
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumber * 100 / $totalShipments)) -Message "Processing Shipment $shipmentNumber" }
 
         $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'
-        $cost1 = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Weight $shipment.'Total Weight' -Class $shipment.'Freight Class 1' -Details $shipment.details -KeyData $Key1Data
-        $cost2 = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Weight $shipment.'Total Weight' -Class $shipment.'Freight Class 1' -Details $shipment.details -KeyData $Key2Data
+        # CORRECTED CALL: Removed -Weight and -Class, as they are now in $shipment.details
+        $cost1 = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Details $shipment.details -KeyData $Key1Data
+        $cost2 = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Details $shipment.details -KeyData $Key2Data
         $VerbosePreference = $CurrentVerbosePreference
 
         if ($cost1 -eq $null -or $cost2 -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping shipment $shipmentNumber (Origin: $($shipment.OriginZip)) due to API error."; continue }
 
         $difference = $cost1 - $cost2; $totalDifference += $difference; $processedShipmentCount++
+        
+        # Extract weight and class from the first commodity item for reporting
+        $reportWeight = 'N/A'; $reportClass = 'N/A'
+        if ($shipment.details -and $shipment.details[0]) {
+            if ($shipment.details[0].PSObject.Properties.Name -contains 'weight') { $reportWeight = $shipment.details[0].weight }
+            if ($shipment.details[0].PSObject.Properties.Name -contains 'classification') { $reportClass = $shipment.details[0].classification }
+            elseif ($shipment.details[0].PSObject.Properties.Name -contains 'class') { $reportClass = $shipment.details[0].class }
+        }
+
         $resultsData.Add([PSCustomObject]@{ 
             OriginZip = $shipment.OriginZip; DestZip = $shipment.DestinationZip; 
-            Weight = $shipment.'Total Weight'; Class = $shipment.'Freight Class 1';
+            Weight = $reportWeight; Class = $reportClass; # Use extracted weight/class for report line
             Cost1 = $cost1; Cost2 = $cost2; Difference = $difference 
         })
     }
@@ -67,7 +77,7 @@ function Run-SAIAComparisonReportGUI {
     foreach ($result in $resultsData) {
         try {
             $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }; $destZipStr = if ([string]::IsNullOrWhiteSpace($result.DestZip)) { 'N/A' } else { $result.DestZip }
-            $weightStr = if ($null -eq $result.Weight) { 'N/A' } else { $result.Weight.ToString("N0") }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class)) { 'N/A' } else { $result.Class }
+            $weightStr = if ($null -eq $result.Weight -or $result.Weight -eq 'N/A') { 'N/A' } else { try {([decimal]$result.Weight).ToString("N0")} catch {'Error'} }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class) -or $result.Class -eq 'N/A') { 'N/A' } else { $result.Class }
             $cost1Str = if ($result.Cost1 -ne $null) { $result.Cost1.ToString("C2") } else { 'Error' }; $cost2Str = if ($result.Cost2 -ne $null) { $result.Cost2.ToString("C2") } else { 'Error' }
             $diffStr = if ($result.Difference -ne $null) { $result.Difference.ToString("C2") } else { 'Error' }
             $line = ($originZipStr.PadRight($col1WidthComp)) + ($destZipStr.PadRight($col2WidthComp)) + ($weightStr.PadRight($col3WidthComp)) + ($classStr.PadRight($col4WidthComp)) + ($cost1Str.PadRight($col5WidthComp)) + ($cost2Str.PadRight($col6WidthComp)) + ($diffStr.PadRight($col7WidthComp))
@@ -126,8 +136,9 @@ function Run-SAIAMarginReportGUI {
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumber * 100 / $totalShipments)) -Message "Processing Shipment $shipmentNumber" }
 
         $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'
-        $baseCost = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Weight $shipment.'Total Weight' -Class $shipment.'Freight Class 1' -Details $shipment.details -KeyData $BaseKeyData
-        $compCost = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Weight $shipment.'Total Weight' -Class $shipment.'Freight Class 1' -Details $shipment.details -KeyData $ComparisonKeyData
+        # CORRECTED CALL
+        $baseCost = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Details $shipment.details -KeyData $BaseKeyData
+        $compCost = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Details $shipment.details -KeyData $ComparisonKeyData
         $VerbosePreference = $CurrentVerbosePreference
 
         if ($baseCost -eq $null -or $compCost -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping shipment $shipmentNumber (API error)."; continue }
@@ -138,9 +149,17 @@ function Run-SAIAMarginReportGUI {
         catch { Write-Warning "Skipping shipment $shipmentNumber (calculation error: $($_.Exception.Message))"; $skippedShipmentCount++; continue }
 
         $processedShipmentCount++; $totalTargetSellPrice += $targetSellPrice; $totalCompCost += $compCost
+        
+        $reportWeight = 'N/A'; $reportClass = 'N/A'
+        if ($shipment.details -and $shipment.details[0]) {
+            if ($shipment.details[0].PSObject.Properties.Name -contains 'weight') { $reportWeight = $shipment.details[0].weight }
+            if ($shipment.details[0].PSObject.Properties.Name -contains 'classification') { $reportClass = $shipment.details[0].classification }
+            elseif ($shipment.details[0].PSObject.Properties.Name -contains 'class') { $reportClass = $shipment.details[0].class }
+        }
+        
         $resultsData.Add([PSCustomObject]@{ 
             OriginZip = $shipment.OriginZip; DestZip = $shipment.DestinationZip; 
-            Weight = $shipment.'Total Weight'; Class = $shipment.'Freight Class 1';
+            Weight = $reportWeight; Class = $reportClass;
             BaseCost = $baseCost; CompCost = $compCost; TargetSellPrice = $targetSellPrice; 
             BaseProfit = $baseProfit; CompProfit = $compProfit 
         })
@@ -150,7 +169,7 @@ function Run-SAIAMarginReportGUI {
     foreach ($result in $resultsData) {
         try {
              $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }; $destZipStr = if ([string]::IsNullOrWhiteSpace($result.DestZip)) { 'N/A' } else { $result.DestZip }
-             $weightStr = if ($null -eq $result.Weight) { 'N/A' } else { $result.Weight.ToString("N0") }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class)) { 'N/A' } else { $result.Class }
+             $weightStr = if ($null -eq $result.Weight -or $result.Weight -eq 'N/A') { 'N/A' } else { try {([decimal]$result.Weight).ToString("N0")} catch {'Error'} }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class) -or $result.Class -eq 'N/A') { 'N/A' } else { $result.Class }
              $baseCostStr = if ($result.BaseCost -ne $null) { $result.BaseCost.ToString("C2") } else { 'Error' }; $compCostStr = if ($result.CompCost -ne $null) { $result.CompCost.ToString("C2") } else { 'Error' }
              $targetSellPriceStr = if ($result.TargetSellPrice -ne $null) { $result.TargetSellPrice.ToString("C2") } else { 'Error' }; $baseProfitStr = if ($result.BaseProfit -ne $null) { $result.BaseProfit.ToString("C2") } else { 'Error' }
              $compProfitStr = if ($result.CompProfit -ne $null) { $result.CompProfit.ToString("C2") } else { 'Error' }
@@ -210,15 +229,24 @@ function Calculate-SAIAMarginForASPReportGUI {
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumber * 100 / $totalShipments)) -Message "Processing Shipment $shipmentNumber" }
 
         $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'
-        $costValue = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Weight $shipment.'Total Weight' -Class $shipment.'Freight Class 1' -Details $shipment.details -KeyData $CostAccountInfo
+        # CORRECTED CALL
+        $costValue = Invoke-SAIAApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -OriginCity $shipment.OriginCity -OriginState $shipment.OriginState -DestinationCity $shipment.DestinationCity -DestinationState $shipment.DestinationState -Details $shipment.details -KeyData $CostAccountInfo
         $VerbosePreference = $CurrentVerbosePreference
 
         if ($costValue -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping shipment $shipmentNumber (API error)."; continue }
 
         $processedShipmentCount++; $totalCostValue += $costValue
+        
+        $reportWeight = 'N/A'; $reportClass = 'N/A'
+        if ($shipment.details -and $shipment.details[0]) {
+            if ($shipment.details[0].PSObject.Properties.Name -contains 'weight') { $reportWeight = $shipment.details[0].weight }
+            if ($shipment.details[0].PSObject.Properties.Name -contains 'classification') { $reportClass = $shipment.details[0].classification }
+            elseif ($shipment.details[0].PSObject.Properties.Name -contains 'class') { $reportClass = $shipment.details[0].class }
+        }
+        
         $resultsData.Add([PSCustomObject]@{ 
             OriginZip = $shipment.OriginZip; DestZip = $shipment.DestinationZip; 
-            Weight = $shipment.'Total Weight'; Class = $shipment.'Freight Class 1'; 
+            Weight = $reportWeight; Class = $reportClass; 
             Cost = $costValue 
         })
     }
@@ -227,7 +255,7 @@ function Calculate-SAIAMarginForASPReportGUI {
     foreach ($result in $resultsData) {
         try {
              $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }; $destZipStr = if ([string]::IsNullOrWhiteSpace($result.DestZip)) { 'N/A' } else { $result.DestZip }
-             $weightStr = if ($null -eq $result.Weight) { 'N/A' } else { $result.Weight.ToString("N0") }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class)) { 'N/A' } else { $result.Class }
+             $weightStr = if ($null -eq $result.Weight -or $result.Weight -eq 'N/A') { 'N/A' } else { try {([decimal]$result.Weight).ToString("N0")} catch {'Error'} }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class) -or $result.Class -eq 'N/A') { 'N/A' } else { $result.Class }
              $costStr = if ($result.Cost -ne $null) { $result.Cost.ToString("C2") } else { 'Error' }
              $line = ($originZipStr.PadRight($col1ASP)) + ($destZipStr.PadRight($col2ASP)) + ($weightStr.PadRight($col3ASP)) + ($classStr.PadRight($col4ASP)) + ($costStr.PadRight($col5ASP))
              $reportContent.Add($line)

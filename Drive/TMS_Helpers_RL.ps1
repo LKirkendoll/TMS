@@ -1,6 +1,6 @@
 # TMS_Helpers_RL.ps1
 # Description: Contains helper functions specific to R+L Carriers operations,
-#              including data normalization and API interaction.
+#              including data normalization and API interaction. Added debug logging and refined object handling.
 #              This file should be dot-sourced by the main script(s) after TMS_Config.ps1.
 
 # Assumes config variables like $script:rlApiUri are available from TMS_Config.ps1
@@ -9,19 +9,17 @@
 # --- Data Normalization Functions ---
 
 function Load-And-Normalize-RLData {
-    # NOTE: This function might need adjustments if your CSV structure changes
-    # to support multiple commodities per row for R+L reports.
-    # Currently, it assumes single commodity details per row based on original design.
     param(
         [Parameter(Mandatory=$true)][string]$CsvPath
     )
     Write-Host "`nLoading R+L data: $(Split-Path $CsvPath -Leaf)" -ForegroundColor Cyan
     # Define required columns based on Invoke-RLApi needs (including single commodity mapping)
-    $reqCols = @( "Origin Postal Code", "Destination Postal Code", "Total Weight", "Freight Class 1", "Origin City", "Origin State", "Destination City", "Destination State", "Total Length", "Total Width", "Total Height")
+    $reqCols = @( "Origin Postal Code", "Destination Postal Code", "Total Weight", "Freight Class 1", "Total Units", "Total Length", "Total Width", "Total Height") # Added Total Units
 
     try {
         if (-not (Test-Path -Path $CsvPath -PathType Leaf)) { Write-Error "CSV file not found at '$CsvPath'."; return $null }
-        $rawData = Import-Csv -Path $CsvPath -ErrorAction Stop
+
+        $rawData = Import-Csv -Path $CsvPath -Delimiter ',' -ErrorAction Stop # Assuming comma delimiter
         Write-Host " -> Rows read from CSV: $($rawData.Count)." -ForegroundColor Gray
         if ($rawData.Count -eq 0) { Write-Warning "CSV empty."; return @() } # Return empty array for no data
 
@@ -31,34 +29,52 @@ function Load-And-Normalize-RLData {
 
         $normData = [System.Collections.Generic.List[object]]::new()
         Write-Host " -> Normalizing R+L data..." -ForegroundColor Gray
-        $invalid = 0; $rowNum = 1
+        $invalid = 0; $csvRowNum = 1 # For user-friendly messages, header is row 1
         foreach ($row in $rawData) {
-            $rowNum++
-            $oZipRaw=$row."Origin Postal Code"; $dZipRaw=$row."Destination Postal Code"; $wtStrRaw=$row."Total Weight"; $clStrRaw=$row."Freight Class 1"; $lenStrRaw=$row."Total Length"; $widStrRaw=$row."Total Width"; $hgtStrRaw=$row."Total Height"
-            $oZip=$oZipRaw.Trim(); $dZip=$dZipRaw.Trim(); $wtStr=$wtStrRaw.Trim(); $clStr=$clStrRaw.Trim(); $lenStr=$lenStrRaw.Trim(); $widStr=$widStrRaw.Trim(); $hgtStr=$hgtStrRaw.Trim()
-            $wtNum=$null; $lenNum=$null; $widNum=$null; $hgtNum=$null; $skipRow = $false
+            $currentDataRowForMessage = $csvRowNum + 1 # Actual data row number
+
+            $oZipRaw=$row."Origin Postal Code"; $dZipRaw=$row."Destination Postal Code"; $wtStrRaw=$row."Total Weight";
+            $clStrRaw = $null
+            if ($row.PSObject.Properties['Freight Class 1'] -ne $null) {
+                $clStrRaw = $row."Freight Class 1"
+                Write-Verbose "DEBUG (Load-And-Normalize-RLData): DataRow ${currentDataRowForMessage} - Raw 'Freight Class 1' value = [$clStrRaw]"
+            } else {
+                 Write-Verbose "DEBUG (Load-And-Normalize-RLData): DataRow ${currentDataRowForMessage} - Column 'Freight Class 1' not found or is null."
+            }
+            $pcsStrRaw=$row."Total Units"; $lenStrRaw=$row."Total Length"; $widStrRaw=$row."Total Width"; $hgtStrRaw=$row."Total Height"
+
+            $oZip=$oZipRaw.Trim(); $dZip=$dZipRaw.Trim(); $wtStr=$wtStrRaw.Trim();
+            $clStr = if ($clStrRaw -ne $null) { $clStrRaw.Trim() } else { $clStrRaw }
+            Write-Verbose "DEBUG (Load-And-Normalize-RLData): DataRow ${currentDataRowForMessage} - Trimmed 'Freight Class 1' value for \$clStr = [$clStr]"
+
+            $pcsStr=$pcsStrRaw.Trim(); $lenStr=$lenStrRaw.Trim(); $widStr=$widStrRaw.Trim(); $hgtStr=$hgtStrRaw.Trim()
+            $wtNum=$null; $pcsNum=$null; $lenNum=$null; $widNum=$null; $hgtNum=$null; $skipRow = $false
 
             # Basic Validation
-            if ([string]::IsNullOrWhiteSpace($oZip) -or $oZip.Length -lt 5) { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Origin Zip"; $skipRow = $true }
-            if (-not $skipRow -and ([string]::IsNullOrWhiteSpace($dZip) -or $dZip.Length -lt 5)) { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Dest Zip"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($clStr)) { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Class"; $skipRow = $true }
+            if ([string]::IsNullOrWhiteSpace($oZip) -or $oZip.Length -lt 5) { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Origin Zip '$($oZipRaw)'"; $skipRow = $true }
+            if (-not $skipRow -and ([string]::IsNullOrWhiteSpace($dZip) -or $dZip.Length -lt 5)) { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Dest Zip '$($dZipRaw)'"; $skipRow = $true }
+            # Class is validated in Invoke-RLApi
+            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($pcsStr)) { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Pieces (Total Units) '$($pcsStrRaw)'"; $skipRow = $true }
+
+
             # Numeric Validation
-            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Weight"; $skipRow = $true } }
-            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Length"; $skipRow = $true } }
-            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Width"; $skipRow = $true } }
-            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL Row ${rowNum}: Bad Height"; $skipRow = $true } }
+            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Weight '$($wtStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Pieces (Total Units) '$($pcsStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Length '$($lenStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Width '$($widStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Height '$($hgtStrRaw)'"; $skipRow = $true } }
 
 
-            if ($skipRow) { continue }
+            if ($skipRow) { $csvRowNum++; continue }
 
-            # Create a single commodity item for reports
-            $commodityItem = [ordered]@{
+            # Create a single commodity item for reports, explicitly as PSCustomObject
+            $commodityItem = [PSCustomObject]@{
                 Class = $clStr      # R+L API uses 'Class'
                 Weight = $wtNum     # R+L API uses 'Weight' (will be converted to float later)
                 Length = $lenNum    # R+L API uses 'Length'
                 Width = $widNum     # R+L API uses 'Width'
                 Height = $hgtNum    # R+L API uses 'Height'
-                # Pieces not explicitly in R+L basic item structure, handled by weight/dims per item
+                Pieces = $pcsNum    # R+L API might need pieces, though not explicitly in basic item structure for XML
             }
 
             # Create normalized object, grabbing optional fields if they exist
@@ -72,14 +88,19 @@ function Load-And-Normalize-RLData {
                 OriginState = if ($headers -contains 'Origin State') { $row.'Origin State'.Trim() } else { $null }
                 DestinationCity = if ($headers -contains 'Destination City') { $row.'Destination City'.Trim() } else { $null }
                 DestinationState = if ($headers -contains 'Destination State') { $row.'Destination State'.Trim() } else { $null }
-                CustomerData = if ($headers -contains 'CustomerData') { $row.CustomerData.Trim() } else { $null }
+                CustomerData = if ($headers -contains 'CustomerData') { $row.CustomerData.Trim() } else { $null } # For R+L API
                 QuoteType = if ($headers -contains 'QuoteType') { $row.QuoteType.Trim() } else { 'Domestic' }
                 CODAmount = if ($headers -contains 'CODAmount') { try {[decimal]$row.CODAmount.Trim()} catch {$null} } else { 0.0 }
                 OriginCountryCode = if ($headers -contains 'OriginCountryCode') { $row.OriginCountryCode.Trim() } else { 'USA' }
                 DestinationCountryCode = if ($headers -contains 'DestinationCountryCode') { $row.DestinationCountryCode.Trim() } else { 'USA' }
                 DeclaredValue = if ($headers -contains 'DeclaredValue') { try {[decimal]$row.DeclaredValue.Trim()} catch {$null} } else { 0.0 }
+                # Also store the original CSV values if needed for other reports or direct display
+                'Total Weight' = $wtNum
+                'Freight Class 1' = $clStr
+                'Total Units' = $pcsNum
             }
             $normData.Add($normalizedEntry)
+            $csvRowNum++
         }
         if ($invalid -gt 0) { Write-Warning " -> Skipped $invalid R+L rows (missing/invalid data)." }
         Write-Host " -> OK: $($normData.Count) R+L rows normalized." -ForegroundColor Green; return $normData
@@ -93,10 +114,8 @@ function Invoke-RLApi {
         [Parameter(Mandatory=$true)] [hashtable]$KeyData,
         [Parameter(Mandatory=$true)] [string]$OriginZip,
         [Parameter(Mandatory=$true)] [string]$DestinationZip,
-        # <<< PARAMETER CHANGE: Accept array of commodities >>>
-        [Parameter(Mandatory=$true)] [array]$Commodities, # Array of hashtables/PSObjects
-        # Removed single Weight/Class params
-        [Parameter(Mandatory=$false)] [PSCustomObject]$ShipmentDetails = $null # For non-commodity details like City, State, DeclaredValue etc.
+        [Parameter(Mandatory=$true)] [array]$Commodities, # Array of PSCustomObjects
+        [Parameter(Mandatory=$false)] [PSCustomObject]$ShipmentDetails = $null # For non-commodity details
     )
 
     $tariffNameForLog = if ($KeyData.ContainsKey('TariffFileName')) { $KeyData.TariffFileName } elseif ($KeyData.ContainsKey('Name')) { $KeyData.Name } else { "UnknownRLTariff" }
@@ -127,7 +146,8 @@ function Invoke-RLApi {
         if ($ShipmentDetails.PSObject.Properties.Match('QuoteType') -and -not [string]::IsNullOrWhiteSpace($ShipmentDetails.QuoteType)) { $QuoteTypeToUse = $ShipmentDetails.QuoteType }
         if ($ShipmentDetails.PSObject.Properties.Match('CODAmount') -and $null -ne $ShipmentDetails.CODAmount) { try { $CODAmountToUse = [decimal]$ShipmentDetails.CODAmount } catch {} }
         if ($ShipmentDetails.PSObject.Properties.Match('DeclaredValue') -and $null -ne $ShipmentDetails.DeclaredValue) { try { $DeclaredValueToUse = [decimal]$ShipmentDetails.DeclaredValue } catch {} }
-        if ($ShipmentDetails.PSObject.Properties.Match('CustomerData') -and -not [string]::IsNullOrWhiteSpace($ShipmentDetails.CustomerData)) { $customerDataToUse = $ShipmentDetails.CustomerData } # Allow override from shipment details
+        # Allow CustomerData from ShipmentDetails to override KeyData if present
+        if ($ShipmentDetails.PSObject.Properties.Match('CustomerData') -and -not [string]::IsNullOrWhiteSpace($ShipmentDetails.CustomerData)) { $customerDataToUse = $ShipmentDetails.CustomerData }
     }
 
     # Validate required non-commodity fields
@@ -140,29 +160,53 @@ function Invoke-RLApi {
     $itemsXmlSnippet = ""
     if ($Commodities -is [array] -and $Commodities.Count -gt 0) {
         $validItemCount = 0
-        foreach ($item in $Commodities) {
-            if ($item -isnot [hashtable] -and $item -isnot [psobject]) { $missingFields += "Commodity item not valid object."; continue }
-
+        for($c = 0; $c -lt $Commodities.Count; $c++){
+            $item = $Commodities[$c]
             $itemClass = $null; $itemWeight = $null; $itemLength = 1.0; $itemWidth = 1.0; $itemHeight = 1.0; # Defaults for optional dims
-            $isValidItem = $true
+            $isValidItem = $true; $currentItemErrors = @()
 
-            if ($item.PSObject.Properties.Match('Class') -and -not [string]::IsNullOrWhiteSpace($item.Class)) { $itemClass = $item.Class } else { $isValidItem = $false; $missingFields += "Item missing/invalid Class '$($item.Class)'" }
-            if ($item.PSObject.Properties.Match('Weight') -and $item.Weight -as [decimal] -ne $null -and [decimal]$item.Weight -gt 0) { $itemWeight = [decimal]$item.Weight } else { $isValidItem = $false; $missingFields += "Item missing/invalid Weight '$($item.Weight)'" }
-            # Optional Dims - use default if missing or invalid
-            if ($item.PSObject.Properties.Match('Length') -and $item.Length -as [decimal] -ne $null -and [decimal]$item.Length -gt 0) { $itemLength = [decimal]$item.Length }
-            if ($item.PSObject.Properties.Match('Width') -and $item.Width -as [decimal] -ne $null -and [decimal]$item.Width -gt 0) { $itemWidth = [decimal]$item.Width }
-            if ($item.PSObject.Properties.Match('Height') -and $item.Height -as [decimal] -ne $null -and [decimal]$item.Height -gt 0) { $itemHeight = [decimal]$item.Height }
+            # Check item type
+            if ($item -is [System.Collections.IDictionary] -or $item -is [psobject]) {
+                try {
+                    # Class
+                    $classValue = $null
+                    if ($item.PSObject.Properties.Match('Class').Count -gt 0) { # Check if 'Class' property exists
+                        $classValue = $item.Class
+                        Write-Verbose "DEBUG (Invoke-RLApi): Item $($c+1) - Read 'Class' value = [$classValue]"
+                    } else {
+                        Write-Verbose "DEBUG (Invoke-RLApi): Item $($c+1) - Property 'Class' not found."
+                        $isValidItem = $false; $currentItemErrors += "Missing 'Class' property"
+                    }
+                    if ($isValidItem -and (-not([string]::IsNullOrWhiteSpace($classValue)) -and $classValue -match '^\d+(\.\d+)?$')) {
+                        $itemClass = $classValue
+                    } elseif ($isValidItem) { # Only add error if property was found but value is bad
+                        $isValidItem = $false; $currentItemErrors += "Invalid Class value ('$($classValue)')"
+                    }
 
-            if ($isValidItem) {
-                $validItemCount++
-                # Convert numbers to appropriate string format for XML (float for R+L)
-                $weightStr = ([float]$itemWeight).ToString("F2") # Example: 2 decimal places
-                $lengthStr = ([float]$itemLength).ToString("F2")
-                $widthStr = ([float]$itemWidth).ToString("F2")
-                $heightStr = ([float]$itemHeight).ToString("F2")
+                    # Weight
+                    if ($item.PSObject.Properties.Match('Weight').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Weight)) -and ($item.Weight -as [decimal]) -ne $null -and [decimal]$item.Weight -gt 0) {
+                        $itemWeight = [decimal]$item.Weight
+                    } else { $isValidItem = $false; $currentItemErrors += "Invalid or Missing Weight ('$($item.Weight)')" }
 
-                # Append XML for this item
-                $itemsXmlSnippet += @"
+                    # Optional Dims - use default if missing or invalid
+                    if ($item.PSObject.Properties.Match('Length').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Length)) -and ($item.Length -as [decimal]) -ne $null -and [decimal]$item.Length -gt 0) { $itemLength = [decimal]$item.Length }
+                    if ($item.PSObject.Properties.Match('Width').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Width)) -and ($item.Width -as [decimal]) -ne $null -and [decimal]$item.Width -gt 0) { $itemWidth = [decimal]$item.Width }
+                    if ($item.PSObject.Properties.Match('Height').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Height)) -and ($item.Height -as [decimal]) -ne $null -and [decimal]$item.Height -gt 0) { $itemHeight = [decimal]$item.Height }
+
+                } catch {
+                    $isValidItem = $false; $currentItemErrors += "Unexpected error accessing commodity properties: $($_.Exception.Message)"
+                }
+
+                if ($isValidItem) {
+                    $validItemCount++
+                    # Convert numbers to appropriate string format for XML (float for R+L)
+                    $weightStr = ([float]$itemWeight).ToString("F2") # Example: 2 decimal places
+                    $lengthStr = ([float]$itemLength).ToString("F2")
+                    $widthStr = ([float]$itemWidth).ToString("F2")
+                    $heightStr = ([float]$itemHeight).ToString("F2")
+
+                    # Append XML for this item
+                    $itemsXmlSnippet += @"
          <tns:Item>
            <tns:Class>$(Escape-Xml $itemClass)</tns:Class>
            <tns:Weight>$weightStr</tns:Weight>
@@ -171,14 +215,19 @@ function Invoke-RLApi {
            <tns:Length>$lengthStr</tns:Length>
          </tns:Item>
 "@
+                } else {
+                     $missingFields += "Item $($c+1): $($currentItemErrors -join ', ')"
+                }
+            } else {
+                $missingFields += "Commodity item $($c+1) is not a valid object type (Type: $($item.GetType().FullName))."
             }
         } # End foreach item
-        if ($validItemCount -eq 0) { $missingFields += "No valid commodity items found after validation." }
+        if ($validItemCount -eq 0 -and $Commodities.Count -gt 0) { $missingFields += "No valid commodity items found after validation." }
     }
     # End Commodity Validation
 
     if ($missingFields.Count -gt 0) {
-        Write-Warning "RL Skip: Tariff '$tariffNameForLog' - Missing/Invalid required data: $($missingFields -join ', ')."
+        Write-Warning "RL Skip: Tariff '$tariffNameForLog' - Missing/Invalid required data: $($missingFields -join '; ')."
         return $null
     }
 

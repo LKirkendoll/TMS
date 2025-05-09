@@ -49,17 +49,25 @@ function Run-RLComparisonReportGUI {
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumber * 100 / $totalShipments)) -Message "Processing Shipment $shipmentNumber" }
 
         $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'
-        # Pass the full $shipment object to Invoke-RLApi as it might need more details than just the few common ones
-        $cost1 = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Weight $shipment.Weight -Class $shipment.Class -KeyData $Key1Data -ShipmentDetails $shipment
-        $cost2 = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Weight $shipment.Weight -Class $shipment.Class -KeyData $Key2Data -ShipmentDetails $shipment
+        # CORRECTED CALL: Use -Commodities $shipment.Commodities, remove -Weight and -Class
+        $cost1 = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Commodities $shipment.Commodities -KeyData $Key1Data -ShipmentDetails $shipment
+        $cost2 = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Commodities $shipment.Commodities -KeyData $Key2Data -ShipmentDetails $shipment
         $VerbosePreference = $CurrentVerbosePreference
 
         if ($cost1 -eq $null -or $cost2 -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping shipment $shipmentNumber (Origin: $($shipment.OriginZip)) due to API error."; continue }
 
         $difference = $cost1 - $cost2; $totalDifference += $difference; $processedShipmentCount++
+        
+        # Extract weight and class from the first commodity item for reporting
+        $reportWeight = 'N/A'; $reportClass = 'N/A'
+        if ($shipment.Commodities -and $shipment.Commodities[0]) {
+            if ($shipment.Commodities[0].PSObject.Properties.Name -contains 'Weight') { $reportWeight = $shipment.Commodities[0].Weight }
+            if ($shipment.Commodities[0].PSObject.Properties.Name -contains 'Class') { $reportClass = $shipment.Commodities[0].Class }
+        }
+        
         $resultsData.Add([PSCustomObject]@{ 
             OriginZip = $shipment.OriginZip; DestZip = $shipment.DestinationZip; 
-            Weight = $shipment.Weight; Class = $shipment.Class;
+            Weight = $reportWeight; Class = $reportClass; # Use extracted weight/class
             Cost1 = $cost1; Cost2 = $cost2; Difference = $difference 
         })
     }
@@ -68,7 +76,7 @@ function Run-RLComparisonReportGUI {
     foreach ($result in $resultsData) {
         try {
             $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }; $destZipStr = if ([string]::IsNullOrWhiteSpace($result.DestZip)) { 'N/A' } else { $result.DestZip }
-            $weightStr = if ($null -eq $result.Weight) { 'N/A' } else { $result.Weight.ToString("N0") }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class)) { 'N/A' } else { $result.Class }
+            $weightStr = if ($null -eq $result.Weight -or $result.Weight -eq 'N/A') { 'N/A' } else { try {([decimal]$result.Weight).ToString("N0")} catch {'Error'} }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class) -or $result.Class -eq 'N/A') { 'N/A' } else { $result.Class }
             $cost1Str = if ($result.Cost1 -ne $null) { $result.Cost1.ToString("C2") } else { 'Error' }; $cost2Str = if ($result.Cost2 -ne $null) { $result.Cost2.ToString("C2") } else { 'Error' }
             $diffStr = if ($result.Difference -ne $null) { $result.Difference.ToString("C2") } else { 'Error' }
             $line = ($originZipStr.PadRight($col1WidthComp)) + ($destZipStr.PadRight($col2WidthComp)) + ($weightStr.PadRight($col3WidthComp)) + ($classStr.PadRight($col4WidthComp)) + ($cost1Str.PadRight($col5WidthComp)) + ($cost2Str.PadRight($col6WidthComp)) + ($diffStr.PadRight($col7WidthComp))
@@ -127,8 +135,9 @@ function Run-RLMarginReportGUI {
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumber * 100 / $totalShipments)) -Message "Processing Shipment $shipmentNumber" }
 
         $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'
-        $baseCost = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Weight $shipment.Weight -Class $shipment.Class -KeyData $BaseKeyData -ShipmentDetails $shipment
-        $compCost = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Weight $shipment.Weight -Class $shipment.Class -KeyData $ComparisonKeyData -ShipmentDetails $shipment
+        # CORRECTED CALL
+        $baseCost = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Commodities $shipment.Commodities -KeyData $BaseKeyData -ShipmentDetails $shipment
+        $compCost = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Commodities $shipment.Commodities -KeyData $ComparisonKeyData -ShipmentDetails $shipment
         $VerbosePreference = $CurrentVerbosePreference
 
         if ($baseCost -eq $null -or $compCost -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping shipment $shipmentNumber (API error)."; continue }
@@ -139,9 +148,16 @@ function Run-RLMarginReportGUI {
         catch { Write-Warning "Skipping shipment $shipmentNumber (calculation error: $($_.Exception.Message))"; $skippedShipmentCount++; continue }
 
         $processedShipmentCount++; $totalTargetSellPrice += $targetSellPrice; $totalCompCost += $compCost
+        
+        $reportWeight = 'N/A'; $reportClass = 'N/A'
+        if ($shipment.Commodities -and $shipment.Commodities[0]) {
+            if ($shipment.Commodities[0].PSObject.Properties.Name -contains 'Weight') { $reportWeight = $shipment.Commodities[0].Weight }
+            if ($shipment.Commodities[0].PSObject.Properties.Name -contains 'Class') { $reportClass = $shipment.Commodities[0].Class }
+        }
+        
         $resultsData.Add([PSCustomObject]@{ 
             OriginZip = $shipment.OriginZip; DestZip = $shipment.DestinationZip; 
-            Weight = $shipment.Weight; Class = $shipment.Class;
+            Weight = $reportWeight; Class = $reportClass;
             BaseCost = $baseCost; CompCost = $compCost; TargetSellPrice = $targetSellPrice; 
             BaseProfit = $baseProfit; CompProfit = $compProfit 
         })
@@ -151,7 +167,7 @@ function Run-RLMarginReportGUI {
     foreach ($result in $resultsData) {
         try {
              $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }; $destZipStr = if ([string]::IsNullOrWhiteSpace($result.DestZip)) { 'N/A' } else { $result.DestZip }
-             $weightStr = if ($null -eq $result.Weight) { 'N/A' } else { $result.Weight.ToString("N0") }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class)) { 'N/A' } else { $result.Class }
+             $weightStr = if ($null -eq $result.Weight -or $result.Weight -eq 'N/A') { 'N/A' } else { try {([decimal]$result.Weight).ToString("N0")} catch {'Error'} }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class) -or $result.Class -eq 'N/A') { 'N/A' } else { $result.Class }
              $baseCostStr = if ($result.BaseCost -ne $null) { $result.BaseCost.ToString("C2") } else { 'Error' }; $compCostStr = if ($result.CompCost -ne $null) { $result.CompCost.ToString("C2") } else { 'Error' }
              $targetSellPriceStr = if ($result.TargetSellPrice -ne $null) { $result.TargetSellPrice.ToString("C2") } else { 'Error' }; $baseProfitStr = if ($result.BaseProfit -ne $null) { $result.BaseProfit.ToString("C2") } else { 'Error' }
              $compProfitStr = if ($result.CompProfit -ne $null) { $result.CompProfit.ToString("C2") } else { 'Error' }
@@ -211,15 +227,23 @@ function Calculate-RLMarginForASPReportGUI {
         if ($useLoadingBar) { Write-LoadingBar -PercentComplete ([int]($shipmentNumber * 100 / $totalShipments)) -Message "Processing Shipment $shipmentNumber" }
 
         $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue'
-        $costValue = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Weight $shipment.Weight -Class $shipment.Class -KeyData $CostAccountInfo -ShipmentDetails $shipment
+        # CORRECTED CALL
+        $costValue = Invoke-RLApi -OriginZip $shipment.OriginZip -DestinationZip $shipment.DestinationZip -Commodities $shipment.Commodities -KeyData $CostAccountInfo -ShipmentDetails $shipment
         $VerbosePreference = $CurrentVerbosePreference
 
         if ($costValue -eq $null) { $skippedShipmentCount++; Write-Warning "Skipping shipment $shipmentNumber (API error)."; continue }
 
         $processedShipmentCount++; $totalCostValue += $costValue
+        
+        $reportWeight = 'N/A'; $reportClass = 'N/A'
+        if ($shipment.Commodities -and $shipment.Commodities[0]) {
+            if ($shipment.Commodities[0].PSObject.Properties.Name -contains 'Weight') { $reportWeight = $shipment.Commodities[0].Weight }
+            if ($shipment.Commodities[0].PSObject.Properties.Name -contains 'Class') { $reportClass = $shipment.Commodities[0].Class }
+        }
+        
         $resultsData.Add([PSCustomObject]@{ 
             OriginZip = $shipment.OriginZip; DestZip = $shipment.DestinationZip; 
-            Weight = $shipment.Weight; Class = $shipment.Class; 
+            Weight = $reportWeight; Class = $reportClass; 
             Cost = $costValue 
         })
     }
@@ -228,7 +252,7 @@ function Calculate-RLMarginForASPReportGUI {
     foreach ($result in $resultsData) {
         try {
              $originZipStr = if ([string]::IsNullOrWhiteSpace($result.OriginZip)) { 'N/A' } else { $result.OriginZip }; $destZipStr = if ([string]::IsNullOrWhiteSpace($result.DestZip)) { 'N/A' } else { $result.DestZip }
-             $weightStr = if ($null -eq $result.Weight) { 'N/A' } else { $result.Weight.ToString("N0") }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class)) { 'N/A' } else { $result.Class }
+             $weightStr = if ($null -eq $result.Weight -or $result.Weight -eq 'N/A') { 'N/A' } else { try {([decimal]$result.Weight).ToString("N0")} catch {'Error'} }; $classStr = if ([string]::IsNullOrWhiteSpace($result.Class) -or $result.Class -eq 'N/A') { 'N/A' } else { $result.Class }
              $costStr = if ($result.Cost -ne $null) { $result.Cost.ToString("C2") } else { 'Error' }
              $line = ($originZipStr.PadRight($col1ASP)) + ($destZipStr.PadRight($col2ASP)) + ($weightStr.PadRight($col3ASP)) + ($classStr.PadRight($col4ASP)) + ($costStr.PadRight($col5ASP))
              $reportContent.Add($line)

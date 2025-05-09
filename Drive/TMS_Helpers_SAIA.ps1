@@ -1,6 +1,6 @@
 # TMS_Helpers_SAIA.ps1
 # Description: Contains helper functions specific to SAIA carrier operations,
-#              including data normalization and API interaction.
+#              including data normalization and API interaction. Ensure PSCustomObject for commodity item.
 #              This file should be dot-sourced by the main script(s) after TMS_Config.ps1.
 
 # Assumes config variables like $script:saiaApiUri are available from TMS_Config.ps1
@@ -9,10 +9,9 @@
 # --- Data Normalization Functions ---
 
 function Load-And-Normalize-SAIAData {
-    # NOTE: This function might need adjustments if your CSV structure changes
-    # to support multiple commodities per row for SAIA reports.
-    # Currently, it assumes single commodity details per row based on original design.
-    param([Parameter(Mandatory)][string]$CsvPath)
+    param(
+        [Parameter(Mandatory=$true)][string]$CsvPath
+    )
     Write-Host "`nLoading SAIA data: $(Split-Path $CsvPath -Leaf)" -ForegroundColor Cyan
     # Base required for API + single commodity mapping from common CSV columns
     $reqCols = @( "Origin Postal Code", "Destination Postal Code", "Total Weight", "Freight Class 1", "Origin City", "Origin State", "Destination City", "Destination State", "Total Units", "Total Length", "Total Width", "Total Height")
@@ -20,57 +19,99 @@ function Load-And-Normalize-SAIAData {
 
     try {
         if (-not (Test-Path -Path $CsvPath -PathType Leaf)) { Write-Error "CSV file not found at '$CsvPath'."; return $null }
-        $rawData = Import-Csv -Path $CsvPath -ErrorAction Stop
-        Write-Host " -> Rows read from CSV: $($rawData.Count)." -ForegroundColor Gray
-        if ($rawData.Count -eq 0) { Write-Warning "CSV empty."; return @() }
 
-        $headers = $rawData[0].PSObject.Properties.Name
-        $missingReq = $reqCols | Where-Object { $_ -notin $headers }
+        # Use Import-Csv for the whole file, then get header (More robust than Get-Content/ConvertFrom-Csv for header)
+        $rawData = $null
+        try {
+            # Explicitly specify delimiter for robustness
+            $rawData = Import-Csv -Path $CsvPath -Delimiter ',' -ErrorAction Stop
+        } catch {
+            Write-Error "Failed to import CSV '$CsvPath'. Error: $($_.Exception.Message)"
+            return $null
+        }
+
+        if ($null -eq $rawData -or $rawData.Count -eq 0) {
+            Write-Warning "CSV '$CsvPath' is empty or could not be imported properly."
+            return @() # Return empty array if no data
+        }
+
+        # Get header from the first imported object's properties
+        $header = $rawData[0].PSObject.Properties.Name
+        if ($null -eq $header -or $header.Count -eq 0) {
+            Write-Error "Could not extract header information after importing CSV '$CsvPath'."
+            return $null
+        }
+
+        Write-Host " -> Rows read from CSV: $($rawData.Count)." -ForegroundColor Gray
+
+        $missingReq = $reqCols | Where-Object { $_ -notin $header }
         if ($missingReq.Count -gt 0) { Write-Error "CSV missing required SAIA columns: $($missingReq -join ', ')"; return $null }
-        $missingOpt = $optCols | Where-Object { $_ -notin $headers }
+        $missingOpt = $optCols | Where-Object { $_ -notin $header }
         if($missingOpt.Count -gt 0){ Write-Warning "CSV missing optional SAIA columns: $($missingOpt -join ', ')" }
 
         $normData = [System.Collections.Generic.List[object]]::new()
         Write-Host " -> Normalizing SAIA data..." -ForegroundColor Gray
-        $invalid = 0; $rowNum = 1
+        $invalid = 0; $rowNum = 1 # Start rowNum at 1 for messages (CSV header is effectively row 0 for data rows)
         foreach ($row in $rawData) {
-            $rowNum++
-            # Read values, trimming whitespace
-            $oZipRaw=$row."Origin Postal Code"; $dZipRaw=$row."Destination Postal Code"; $wtStrRaw=$row."Total Weight"; $clStrRaw=$row."Freight Class 1"; $oCityRaw=$row."Origin City"; $oStateRaw=$row."Origin State"; $dCityRaw=$row."Destination City"; $dStateRaw=$row."Destination State"; $pcsStrRaw=$row."Total Units"; $lenStrRaw=$row."Total Length"; $widStrRaw=$row."Total Width"; $hgtStrRaw=$row."Total Height"
+            # For messages, $rowNum will be 2 for the first data row, 3 for the second, etc.
+            # This aligns with typical spreadsheet row numbering if header is row 1.
+            $currentDataRowForMessage = $rowNum + 1
 
-            $oZip=$oZipRaw.Trim(); $dZip=$dZipRaw.Trim(); $wtStr=$wtStrRaw.Trim(); $clStr=$clStrRaw.Trim(); $oCity=$oCityRaw.Trim(); $oState=$oStateRaw.Trim(); $dCity=$dCityRaw.Trim(); $dState=$dStateRaw.Trim(); $pcsStr=$pcsStrRaw.Trim(); $lenStr=$lenStrRaw.Trim(); $widStr=$widStrRaw.Trim(); $hgtStr=$hgtStrRaw.Trim()
+            # Read values, trimming whitespace
+            $oZipRaw=$row."Origin Postal Code"; $dZipRaw=$row."Destination Postal Code"; $wtStrRaw=$row."Total Weight";
+            # DEBUG: Check the raw value read for Freight Class 1
+            $clStrRaw = $null # Initialize to null
+            # Check if the property 'Freight Class 1' exists on the $row object
+            if ($row.PSObject.Properties['Freight Class 1'] -ne $null) {
+                $clStrRaw = $row."Freight Class 1" # Access the property value
+                Write-Host "DEBUG (Load-And-Normalize-SAIAData): DataRow ${currentDataRowForMessage} - Raw 'Freight Class 1' value = [$clStrRaw]" # DEBUG Line
+            } else {
+                 Write-Host "DEBUG (Load-And-Normalize-SAIAData): DataRow ${currentDataRowForMessage} - Column 'Freight Class 1' not found on row object or its value is \$null." # DEBUG Line
+            }
+
+            $oCityRaw=$row."Origin City"; $oStateRaw=$row."Origin State"; $dCityRaw=$row."Destination City"; $dStateRaw=$row."Destination State"; $pcsStrRaw=$row."Total Units"; $lenStrRaw=$row."Total Length"; $widStrRaw=$row."Total Width"; $hgtStrRaw=$row."Total Height"
+
+            $oZip=$oZipRaw.Trim(); $dZip=$dZipRaw.Trim(); $wtStr=$wtStrRaw.Trim();
+            # Trim $clStrRaw only if it's not null
+            $clStr = if ($clStrRaw -ne $null) { $clStrRaw.Trim() } else { $clStrRaw }
+            $oCity=$oCityRaw.Trim(); $oState=$oStateRaw.Trim(); $dCity=$dCityRaw.Trim(); $dState=$dStateRaw.Trim(); $pcsStr=$pcsStrRaw.Trim(); $lenStr=$lenStrRaw.Trim(); $widStr=$widStrRaw.Trim(); $hgtStr=$hgtStrRaw.Trim()
+            Write-Host "DEBUG (Load-And-Normalize-SAIAData): DataRow ${currentDataRowForMessage} - Trimmed 'Freight Class 1' value for \$clStr = [$clStr]" # DEBUG Line
+
             $wtNum=$null; $pcsNum=$null; $lenNum=$null; $widNum=$null; $hgtNum=$null; $skipRow = $false
 
             # Basic Validation
-            if ([string]::IsNullOrWhiteSpace($oZip) -or $oZip.Length -lt 5) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Origin Zip"; $skipRow = $true }
-            if (-not $skipRow -and ([string]::IsNullOrWhiteSpace($dZip) -or $dZip.Length -lt 5)) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Dest Zip"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($clStr)) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Class"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($oCity)) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Origin City"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($oState)) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Origin State"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($dCity)) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Dest City"; $skipRow = $true }
-            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($dState)) { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Dest State"; $skipRow = $true }
+            if ([string]::IsNullOrWhiteSpace($oZip) -or $oZip.Length -lt 5) { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Origin Zip '$($oZipRaw)'"; $skipRow = $true }
+            if (-not $skipRow -and ([string]::IsNullOrWhiteSpace($dZip) -or $dZip.Length -lt 5)) { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Dest Zip '$($dZipRaw)'"; $skipRow = $true }
+            # Class validation happens later in Invoke-SAIAApi based on the normalized data
+            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($oCity)) { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Origin City '$($oCityRaw)'"; $skipRow = $true }
+            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($oState)) { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Origin State '$($oStateRaw)'"; $skipRow = $true }
+            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($dCity)) { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Dest City '$($dCityRaw)'"; $skipRow = $true }
+            if (-not $skipRow -and [string]::IsNullOrWhiteSpace($dState)) { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Dest State '$($dStateRaw)'"; $skipRow = $true }
             # Numeric Validation
-            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Weight"; $skipRow = $true } }
-            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Pieces"; $skipRow = $true } }
-            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Length"; $skipRow = $true } }
-            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Width"; $skipRow = $true } }
-            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip SAIA Row ${rowNum}: Bad Height"; $skipRow = $true } }
+            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw} } catch { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Weight '$($wtStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw} } catch { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Pieces '$($pcsStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw} } catch { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Length '$($lenStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw} } catch { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Width '$($widStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw} } catch { $invalid++; Write-Host "Skip SAIA DataRow ${currentDataRowForMessage}: Bad Height '$($hgtStrRaw)'"; $skipRow = $true } }
 
-            if ($skipRow) { continue }
+            if ($skipRow) { $rowNum++; continue } # Increment $rowNum here before continuing
 
             # Create a single commodity item for reports
-            $commodityItem = [ordered]@{
-                classification = $clStr
-                weight = $wtNum # Keep as number for potential calculations later
+            # Use the exact property name 'classification' as expected by Invoke-SAIAApi
+            # CHANGED: Explicitly cast to [PSCustomObject]
+            $commodityItem = [PSCustomObject]@{
+                classification = $clStr # Store the trimmed class string
+                weight = $wtNum # Store numeric weight
                 length = $lenNum
                 width = $widNum
                 height = $hgtNum
                 pieces = $pcsNum
-                packagingType = if ($headers -contains 'Packaging Type 1') { $row.'Packaging Type 1'.Trim() } else { "PAT" }
-                description = if ($headers -contains 'Description 1') { $row.'Description 1'.Trim() } else { "Commodity" }
-                stackable = if ($headers -contains 'Stackable 1') { $row.'Stackable 1'.Trim() } else { "Y" }
+                packagingType = if ($header -contains 'Packaging Type 1') { $row.'Packaging Type 1'.Trim() } else { "PAT" }
+                description = if ($header -contains 'Description 1') { $row.'Description 1'.Trim() } else { "Commodity" }
+                stackable = if ($header -contains 'Stackable 1') { $row.'Stackable 1'.Trim() } else { "Y" }
             }
 
+            # Create the final normalized object for this row
             $newRow = [PSCustomObject]@{
                 OriginZip        = $oZip
                 DestinationZip   = $dZip
@@ -82,9 +123,10 @@ function Load-And-Normalize-SAIAData {
                 details          = @($commodityItem)
                 # Include original total weight/class for potential historical lookups if needed
                 'Total Weight'   = $wtNum
-                'Freight Class 1' = $clStr
+                'Freight Class 1' = $clStr # Store trimmed class string here too
             }
             $normData.Add($newRow)
+            $rowNum++ # Increment $rowNum after successful processing of a row
         }
 
         if ($invalid -gt 0) { Write-Warning " -> Skipped $invalid SAIA rows during normalization (missing/invalid essential data)." }
@@ -106,9 +148,7 @@ function Invoke-SAIAApi {
         [Parameter(Mandatory=$true)] [string]$OriginState,
         [Parameter(Mandatory=$true)] [string]$DestinationCity,
         [Parameter(Mandatory=$true)] [string]$DestinationState,
-        # <<< PARAMETER CHANGE: Accept array of commodities via $Details >>>
         [Parameter(Mandatory=$true)] [array]$Details # Array of hashtables/PSObjects for commodities
-        # Removed single Weight/Class params
     )
 
     $saiaUserID = $null; $saiaPassword = $null; $saiaRQKey = $null; $accountCodeToUse = $null
@@ -116,13 +156,13 @@ function Invoke-SAIAApi {
 
     # Extract credentials from KeyData
     try {
-        if ($KeyData.ContainsKey('UserID')) { $saiaUserID = $KeyData.UserID } else { Write-Verbose "UserID missing from KeyData for Acct '$tariffNameForLog'."}
-        if ($KeyData.ContainsKey('Password')) { $saiaPassword = $KeyData.Password } else { Write-Verbose "Password missing from KeyData for Acct '$tariffNameForLog'."}
-        if ($KeyData.ContainsKey('RQKey')) { $saiaRQKey = $KeyData.RQKey } else { Write-Verbose "RQKey missing from KeyData for Acct '$tariffNameForLog'."}
-        if ($KeyData.ContainsKey('AccountCode')) { $accountCodeToUse = $KeyData.AccountCode } else { Write-Verbose "AccountCode not found in KeyData for SAIA Acct '$tariffNameForLog'." }
+        if ($KeyData.ContainsKey('UserID')) { $saiaUserID = $KeyData.UserID } else { Write-Host "UserID missing from KeyData for Acct '$tariffNameForLog'."}
+        if ($KeyData.ContainsKey('Password')) { $saiaPassword = $KeyData.Password } else { Write-Host "Password missing from KeyData for Acct '$tariffNameForLog'."}
+        if ($KeyData.ContainsKey('RQKey')) { $saiaRQKey = $KeyData.RQKey } else { Write-Host "RQKey missing from KeyData for Acct '$tariffNameForLog'."}
+        if ($KeyData.ContainsKey('AccountCode')) { $accountCodeToUse = $KeyData.AccountCode } else { Write-Host "AccountCode not found in KeyData for SAIA Acct '$tariffNameForLog'." }
     } catch { Write-Warning "SAIA Credential Extract Fail for Acct '$tariffNameForLog': $($_.Exception.Message)"; return $null }
 
-    # --- Validate Inputs ---
+    # --- Validate Base Inputs ---
     $missingFields = @()
     if ([string]::IsNullOrWhiteSpace($OriginZip)) { $missingFields += "OriginZip" }
     if ([string]::IsNullOrWhiteSpace($DestinationZip)) { $missingFields += "DestinationZip" }
@@ -133,52 +173,118 @@ function Invoke-SAIAApi {
     if ($null -eq $Details -or $Details.Count -eq 0) { $missingFields += "Details (Commodity array empty or null)"}
     if ([string]::IsNullOrWhiteSpace($saiaRQKey) -and ([string]::IsNullOrWhiteSpace($saiaUserID) -or [string]::IsNullOrWhiteSpace($saiaPassword))) { $missingFields += "Credentials (Missing RQKey AND UserID/Password pair)" }
 
-    # --- Process Commodity Details Array ---
+    # --- Process Commodity Details Array (Simplified Class Access) ---
     $detailsArrayForPayload = @()
     $totalWeightForPayload = 0.0
     $totalCubeInches = 0.0
     if ($Details -is [array] -and $Details.Count -gt 0) {
         for ($i = 0; $i -lt $Details.Count; $i++) {
             $item = $Details[$i]
-            $itemWeight = $null; $itemClass = $null; $itemLength = $null; $itemWidth = $null; $itemHeight = $null; $itemPieces = $null; $itemStackable = 'N' # Default stackable to No
+            $itemWeight = $null; $itemClass = $null; $itemLength = $null; $itemWidth = $null; $itemHeight = $null; $itemPieces = $null; $itemStackable = 'N'
             $isValidItem = $true
+            $currentItemErrors = @() # Track errors for this specific item
 
-            if ($item -is [hashtable] -or $item -is [psobject]) {
-                # Extract and validate each field for the current item
-                if ($item.PSObject.Properties.Name -contains 'weight' -and $item.weight -as [decimal] -ne $null -and [decimal]$item.weight -gt 0) { $itemWeight = [decimal]$item.weight } else { $isValidItem = $false; $missingFields += "Item $($i+1) Invalid Weight '$($item.weight)'" }
-                if ($item.PSObject.Properties.Name -contains 'classification' -and -not [string]::IsNullOrWhiteSpace($item.classification)) { $itemClass = $item.classification } elseif ($item.PSObject.Properties.Name -contains 'class' -and -not [string]::IsNullOrWhiteSpace($item.class)) { $itemClass = $item.class } else { $isValidItem = $false; $missingFields += "Item $($i+1) Invalid Class" } # Accept 'class' or 'classification'
-                if ($item.PSObject.Properties.Name -contains 'length' -and $item.length -as [decimal] -ne $null -and [decimal]$item.length -gt 0) { $itemLength = [decimal]$item.length } else { $isValidItem = $false; $missingFields += "Item $($i+1) Invalid Length '$($item.length)'" }
-                if ($item.PSObject.Properties.Name -contains 'width' -and $item.width -as [decimal] -ne $null -and [decimal]$item.width -gt 0) { $itemWidth = [decimal]$item.width } else { $isValidItem = $false; $missingFields += "Item $($i+1) Invalid Width '$($item.width)'" }
-                if ($item.PSObject.Properties.Name -contains 'height' -and $item.height -as [decimal] -ne $null -and [decimal]$item.height -gt 0) { $itemHeight = [decimal]$item.height } else { $isValidItem = $false; $missingFields += "Item $($i+1) Invalid Height '$($item.height)'" }
-                if ($item.PSObject.Properties.Name -contains 'pieces' -and $item.pieces -as [int] -ne $null -and [int]$item.pieces -gt 0) { $itemPieces = [int]$item.pieces } else { $isValidItem = $false; $missingFields += "Item $($i+1) Invalid Pieces '$($item.pieces)'" }
-                if ($item.PSObject.Properties.Name -contains 'stackable' -and $item.stackable -eq 'Y') {$itemStackable = 'Y'} # Only set to Y if explicitly Y
+            # Check if $item is a usable object type
+            if ($item -is [System.Collections.IDictionary] -or $item -is [psobject]) {
+                # Try direct property access with validation
+                try {
+                    # Weight
+                    if ($item.PSObject.Properties['weight'] -ne $null -and -not([string]::IsNullOrWhiteSpace($item.weight)) -and ($item.weight -as [decimal]) -ne $null -and [decimal]$item.weight -gt 0) {
+                        $itemWeight = [decimal]$item.weight
+                    } else { $isValidItem = $false; $currentItemErrors += "Invalid Weight ('$($item.weight)')" }
 
+                    # Class (Simplified Access)
+                    $classValue = $null
+                    # Check if the 'classification' property exists and try to get its value
+                    if ($item -ne $null -and $item.PSObject.Properties.Match('classification').Count -gt 0) { # Using Match as it was in the last provided version
+                        $classValue = $item.classification # Access directly
+                        Write-Host "DEBUG (Invoke-SAIAApi): Item $($i+1) - Read 'classification' value = [$classValue]"
+                    } else {
+                         Write-Host "DEBUG (Invoke-SAIAApi): Item $($i+1) - Property 'classification' not found or item is null (using Match)." # Indicate Match was used
+                         # If 'classification' is missing, the class is invalid for SAIA
+                         $isValidItem = $false
+                         $currentItemErrors += "Missing 'classification' property"
+                    }
+
+                    # Validate class looks like a number AND is not empty/whitespace (only if property was found)
+                    if ($isValidItem) { # Only validate if we think we have a class property
+                        if (-not([string]::IsNullOrWhiteSpace($classValue)) -and $classValue -match '^\d+(\.\d+)?$') {
+                           $itemClass = $classValue # Keep as string, API payload needs double
+                        } else {
+                            $isValidItem = $false
+                            # Log the value that failed validation, even if it was $null
+                            $currentItemErrors += "Invalid Class value ('$($classValue)')"
+                        }
+                    }
+
+                    # Length
+                    if ($item.PSObject.Properties['length'] -ne $null -and -not([string]::IsNullOrWhiteSpace($item.length)) -and ($item.length -as [decimal]) -ne $null -and [decimal]$item.length -gt 0) {
+                        $itemLength = [decimal]$item.length
+                    } else { $isValidItem = $false; $currentItemErrors += "Invalid Length ('$($item.length)')" }
+
+                    # Width
+                    if ($item.PSObject.Properties['width'] -ne $null -and -not([string]::IsNullOrWhiteSpace($item.width)) -and ($item.width -as [decimal]) -ne $null -and [decimal]$item.width -gt 0) {
+                        $itemWidth = [decimal]$item.width
+                    } else { $isValidItem = $false; $currentItemErrors += "Invalid Width ('$($item.width)')" }
+
+                    # Height
+                    if ($item.PSObject.Properties['height'] -ne $null -and -not([string]::IsNullOrWhiteSpace($item.height)) -and ($item.height -as [decimal]) -ne $null -and [decimal]$item.height -gt 0) {
+                        $itemHeight = [decimal]$item.height
+                    } else { $isValidItem = $false; $currentItemErrors += "Invalid Height ('$($item.height)')" }
+
+                    # Pieces
+                    if ($item.PSObject.Properties['pieces'] -ne $null -and -not([string]::IsNullOrWhiteSpace($item.pieces)) -and ($item.pieces -as [int]) -ne $null -and [int]$item.pieces -gt 0) {
+                        $itemPieces = [int]$item.pieces
+                    } else { $isValidItem = $false; $currentItemErrors += "Invalid Pieces ('$($item.pieces)')" }
+
+                    # Stackable (Optional, defaults to N)
+                    if ($item.PSObject.Properties['stackable'] -ne $null -and $item.stackable -eq 'Y') {
+                        $itemStackable = 'Y'
+                    } # Otherwise remains 'N'
+
+                } catch {
+                    # Catch unexpected errors during property access/conversion
+                    $isValidItem = $false
+                    $currentItemErrors += "Unexpected error accessing properties: $($_.Exception.Message)"
+                }
+
+                # If item passed validation, add to payload array
                 if ($isValidItem) {
+                    # Convert to types expected by SAIA API payload (based on previous code)
                     $detailsArrayForPayload += [ordered]@{
-                        length = [double]$itemLength # API expects number
+                        length = [double]$itemLength
                         width  = [double]$itemWidth
                         height = [double]$itemHeight
-                        weight = [int]$itemWeight # API example shows integer weight
-                        class  = [double]$itemClass # API example shows number class
-                        units  = $itemPieces # API uses 'units'
-                        # packagingType and description seem optional for rating based on example
+                        weight = [int]$itemWeight # API example showed integer weight
+                        class  = [double]$itemClass # API example showed number class
+                        units  = $itemPieces
                     }
                     $totalWeightForPayload += $itemWeight
                     $totalCubeInches += ($itemLength * $itemWidth * $itemHeight * $itemPieces)
+                } else {
+                    # Add collected errors for this item to the main missing fields list
+                    $missingFields += "Item $($i+1): $($currentItemErrors -join ', ')"
                 }
+
             } else {
-                 $missingFields += "Item $($i+1) is not a valid object."
+                 # $item was not a dictionary or psobject
+                 $isValidItem = $false
+                 $missingFields += "Item $($i+1) is not a valid object type (Type: $($item.GetType().FullName))." # Add type info to error
             }
-        }
+        } # End for loop
+
+        # Check if any valid items were found after iterating through all provided details
         if ($detailsArrayForPayload.Count -eq 0 -and $Details.Count -gt 0) {
              $missingFields += "No valid commodity items found after validation."
         }
     }
-    # End Commodity Processing
+    # End Commodity Processing (Simplified Class Access)
 
+
+    # Check if any errors were added during base input or commodity validation
     if ($missingFields.Count -gt 0) {
         $contextZips = "OZip:$OriginZip DZip:$DestinationZip"
-        Write-Warning "SAIA Skip: Acct '$tariffNameForLog' $contextZips - Missing/Invalid required data: $($missingFields -join ', ')."
+        Write-Warning "SAIA Skip: Acct '$tariffNameForLog' $contextZips - Missing/Invalid required data: $($missingFields -join '; ')." # Use semicolon for readability
         return $null
     }
 
@@ -199,13 +305,11 @@ function Invoke-SAIAApi {
             city = $OriginCity
             state = $OriginState
             zipcode = $OriginZip
-            # accountCode = $accountCodeToUse # Add if applicable
         }
         destination = @{
             city = $DestinationCity
             state = $DestinationState
             zipcode = $DestinationZip
-            # accountCode = $accountCodeToUse # Add if applicable
         }
         weightUnits = "LBS"
         measurementUnit = "IN"
@@ -228,7 +332,7 @@ function Invoke-SAIAApi {
     }
 
     $payload = $payloadObject | ConvertTo-Json -Depth 10
-    Write-Verbose "SAIA Payload ($tariffNameForLog): $payload"
+    Write-Host "SAIA Payload ($tariffNameForLog): $payload"
 
     # --- API Call ---
     $headers = @{ 'Content-Type' = 'application/json'; 'Cache-Control' = 'no-cache' }
@@ -238,7 +342,7 @@ function Invoke-SAIAApi {
 
     try {
         $apiUrl = $script:saiaApiUri
-        if ([string]::IsNullOrWhiteSpace($apiUrl)) { throw "SAIA API URI ($($apiUrl)) is not defined or empty."}
+        if ([string]::IsNullOrWhiteSpace($apiUrl)) { throw "SAIA API URI ($($apiUrl)) is not defined or empty in TMS_Config.ps1."}
 
         # Final credential check before call
         if (-not $headers.ContainsKey('RQ-Key') -and ([string]::IsNullOrWhiteSpace($payloadObject.userID) -or [string]::IsNullOrWhiteSpace($payloadObject.password)) ) {
@@ -246,7 +350,7 @@ function Invoke-SAIAApi {
         }
 
         $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $payload -ErrorAction Stop
-        Write-Verbose "SAIA OK: Acct '$tariffNameForLog'"
+        Write-Host "SAIA OK: Acct '$tariffNameForLog'"
 
         $totalChargeValue = $null
         if ($response -ne $null -and
@@ -267,7 +371,7 @@ function Invoke-SAIAApi {
             }
         } else {
              Write-Warning "SAIA Resp missing 'rateDetails.totalInvoice' or structure invalid for Acct '$tariffNameForLog'.";
-             # Write-Verbose "SAIA Full Response: $($response | ConvertTo-Json -Depth 5)" # Uncomment for deep debug
+             # Write-Host "SAIA Full Response: $($response | ConvertTo-Json -Depth 5)" # Uncomment for deep debug
              return $null
         }
     } catch {
@@ -283,4 +387,4 @@ function Invoke-SAIAApi {
      }
 }
 
-Write-Verbose "TMS SAIA Helper Functions loaded."
+Write-Host "TMS SAIA Helper Functions loaded."
