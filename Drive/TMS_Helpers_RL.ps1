@@ -6,6 +6,13 @@
 # Assumes config variables like $script:rlApiUri are available from TMS_Config.ps1
 # Assumes general helper functions (if any were used by these) are available.
 
+# --- Helper function to escape XML special characters ---
+# MOVED TO SCRIPT SCOPE for reliable access
+function Escape-Xml ($string) {
+    if ($null -eq $string) { return '' };
+    return [System.Security.SecurityElement]::Escape($string.ToString()) # Ensure it's a string before escaping
+}
+
 # --- Data Normalization Functions ---
 
 function Load-And-Normalize-RLData {
@@ -58,11 +65,11 @@ function Load-And-Normalize-RLData {
 
 
             # Numeric Validation
-            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Weight '$($wtStrRaw)'"; $skipRow = $true } }
-            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Pieces (Total Units) '$($pcsStrRaw)'"; $skipRow = $true } }
-            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Length '$($lenStrRaw)'"; $skipRow = $true } }
-            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Width '$($widStrRaw)'"; $skipRow = $true } }
-            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Height '$($hgtStrRaw)'"; $skipRow = $true } }
+            if (-not $skipRow) { try { $wtNum = [decimal]$wtStr; if($wtNum -le 0){throw "Weight must be positive."} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Weight '$($wtStrRaw)' Error: $($_.Exception.Message)"; $skipRow = $true } }
+            if (-not $skipRow) { try { $pcsNum = [int]$pcsStr; if($pcsNum -le 0){throw "Pieces must be positive."} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Pieces (Total Units) '$($pcsStrRaw)' Error: $($_.Exception.Message)"; $skipRow = $true } }
+            if (-not $skipRow) { try { $lenNum = [decimal]$lenStr; if($lenNum -le 0){throw "Length must be positive."} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Length '$($lenStrRaw)' Error: $($_.Exception.Message)"; $skipRow = $true } }
+            if (-not $skipRow) { try { $widNum = [decimal]$widStr; if($widNum -le 0){throw "Width must be positive."} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Width '$($widStrRaw)' Error: $($_.Exception.Message)"; $skipRow = $true } }
+            if (-not $skipRow) { try { $hgtNum = [decimal]$hgtStr; if($hgtNum -le 0){throw "Height must be positive."} } catch { $invalid++; Write-Verbose "Skip RL DataRow ${currentDataRowForMessage}: Bad Height '$($hgtStrRaw)' Error: $($_.Exception.Message)"; $skipRow = $true } }
 
 
             if ($skipRow) { $csvRowNum++; continue }
@@ -125,11 +132,11 @@ function Invoke-RLApi {
     if ($KeyData.ContainsKey('CustomerData')) { $customerDataToUse = $KeyData.CustomerData }
 
     # --- Validate Base Inputs ---
-    $missingFields = @()
-    if ([string]::IsNullOrWhiteSpace($OriginZip)) { $missingFields += "OriginZip" }
-    if ([string]::IsNullOrWhiteSpace($DestinationZip)) { $missingFields += "DestinationZip" }
-    if ($null -eq $Commodities -or $Commodities.Count -eq 0) { $missingFields += "Commodities (array empty or null)" }
-    if ([string]::IsNullOrWhiteSpace($apiKeyToUse)) { $missingFields += "APIKey (from KeyData)" }
+    $missingFields = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($OriginZip)) { $missingFields.Add("OriginZip") }
+    if ([string]::IsNullOrWhiteSpace($DestinationZip)) { $missingFields.Add("DestinationZip") }
+    if ($null -eq $Commodities -or $Commodities.Count -eq 0) { $missingFields.Add("Commodities (array empty or null)") }
+    if ([string]::IsNullOrWhiteSpace($apiKeyToUse)) { $missingFields.Add("APIKey (from KeyData)") }
 
     # --- Get Non-Commodity Details from $ShipmentDetails if provided ---
     $OriginCityToUse = "UNKNOWN"; $OriginStateToUse = "XX"; $OriginCountryCodeToUse = "USA";
@@ -151,10 +158,10 @@ function Invoke-RLApi {
     }
 
     # Validate required non-commodity fields
-    if ([string]::IsNullOrWhiteSpace($OriginCityToUse) -or $OriginCityToUse -eq "UNKNOWN") {$missingFields += "OriginCity"}
-    if ([string]::IsNullOrWhiteSpace($OriginStateToUse) -or $OriginStateToUse -eq "XX") {$missingFields += "OriginState"}
-    if ([string]::IsNullOrWhiteSpace($DestinationCityToUse) -or $DestinationCityToUse -eq "UNKNOWN") {$missingFields += "DestinationCity"}
-    if ([string]::IsNullOrWhiteSpace($DestinationStateToUse) -or $DestinationStateToUse -eq "XX") {$missingFields += "DestinationState"}
+    if ([string]::IsNullOrWhiteSpace($OriginCityToUse) -or $OriginCityToUse -eq "UNKNOWN") {$missingFields.Add("OriginCity")}
+    if ([string]::IsNullOrWhiteSpace($OriginStateToUse) -or $OriginStateToUse -eq "XX") {$missingFields.Add("OriginState")}
+    if ([string]::IsNullOrWhiteSpace($DestinationCityToUse) -or $DestinationCityToUse -eq "UNKNOWN") {$missingFields.Add("DestinationCity")}
+    if ([string]::IsNullOrWhiteSpace($DestinationStateToUse) -or $DestinationStateToUse -eq "XX") {$missingFields.Add("DestinationState")}
 
     # --- Validate Commodities and Build XML Snippet ---
     $itemsXmlSnippet = ""
@@ -163,7 +170,7 @@ function Invoke-RLApi {
         for($c = 0; $c -lt $Commodities.Count; $c++){
             $item = $Commodities[$c]
             $itemClass = $null; $itemWeight = $null; $itemLength = 1.0; $itemWidth = 1.0; $itemHeight = 1.0; # Defaults for optional dims
-            $isValidItem = $true; $currentItemErrors = @()
+            $isValidItem = $true; $currentItemErrors = [System.Collections.Generic.List[string]]::new()
 
             # Check item type
             if ($item -is [System.Collections.IDictionary] -or $item -is [psobject]) {
@@ -175,18 +182,18 @@ function Invoke-RLApi {
                         Write-Verbose "DEBUG (Invoke-RLApi): Item $($c+1) - Read 'Class' value = [$classValue]"
                     } else {
                         Write-Verbose "DEBUG (Invoke-RLApi): Item $($c+1) - Property 'Class' not found."
-                        $isValidItem = $false; $currentItemErrors += "Missing 'Class' property"
+                        $isValidItem = $false; $currentItemErrors.Add("Missing 'Class' property")
                     }
                     if ($isValidItem -and (-not([string]::IsNullOrWhiteSpace($classValue)) -and $classValue -match '^\d+(\.\d+)?$')) {
                         $itemClass = $classValue
                     } elseif ($isValidItem) { # Only add error if property was found but value is bad
-                        $isValidItem = $false; $currentItemErrors += "Invalid Class value ('$($classValue)')"
+                        $isValidItem = $false; $currentItemErrors.Add("Invalid Class value ('$($classValue)')")
                     }
 
                     # Weight
                     if ($item.PSObject.Properties.Match('Weight').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Weight)) -and ($item.Weight -as [decimal]) -ne $null -and [decimal]$item.Weight -gt 0) {
                         $itemWeight = [decimal]$item.Weight
-                    } else { $isValidItem = $false; $currentItemErrors += "Invalid or Missing Weight ('$($item.Weight)')" }
+                    } else { $isValidItem = $false; $currentItemErrors.Add("Invalid or Missing Weight ('$($item.Weight)')") }
 
                     # Optional Dims - use default if missing or invalid
                     if ($item.PSObject.Properties.Match('Length').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Length)) -and ($item.Length -as [decimal]) -ne $null -and [decimal]$item.Length -gt 0) { $itemLength = [decimal]$item.Length }
@@ -194,7 +201,7 @@ function Invoke-RLApi {
                     if ($item.PSObject.Properties.Match('Height').Count -gt 0 -and -not([string]::IsNullOrWhiteSpace($item.Height)) -and ($item.Height -as [decimal]) -ne $null -and [decimal]$item.Height -gt 0) { $itemHeight = [decimal]$item.Height }
 
                 } catch {
-                    $isValidItem = $false; $currentItemErrors += "Unexpected error accessing commodity properties: $($_.Exception.Message)"
+                    $isValidItem = $false; $currentItemErrors.Add("Unexpected error accessing commodity properties: $($_.Exception.Message)")
                 }
 
                 if ($isValidItem) {
@@ -216,13 +223,13 @@ function Invoke-RLApi {
          </tns:Item>
 "@
                 } else {
-                     $missingFields += "Item $($c+1): $($currentItemErrors -join ', ')"
+                     $missingFields.Add("Item $($c+1): $($currentItemErrors -join ', ')")
                 }
             } else {
-                $missingFields += "Commodity item $($c+1) is not a valid object type (Type: $($item.GetType().FullName))."
+                $missingFields.Add("Commodity item $($c+1) is not a valid object type (Type: $($item.GetType().FullName)).")
             }
         } # End foreach item
-        if ($validItemCount -eq 0 -and $Commodities.Count -gt 0) { $missingFields += "No valid commodity items found after validation." }
+        if ($validItemCount -eq 0 -and $Commodities.Count -gt 0) { $missingFields.Add("No valid commodity items found after validation.") }
     }
     # End Commodity Validation
 
@@ -232,14 +239,13 @@ function Invoke-RLApi {
     }
 
     # --- Construct SOAP Payload ---
-    $soapEndpoint = $script:rlApiUri
-    if ([string]::IsNullOrWhiteSpace($soapEndpoint)) { throw "R+L API URI ('$($soapEndpoint)') is not defined or empty." }
+    $soapEndpoint = $script:rlApiUri # Assumes $script:rlApiUri is loaded from TMS_Config.ps1
+    if ([string]::IsNullOrWhiteSpace($soapEndpoint)) { Write-Error "R+L API URI ('$($soapEndpoint)') is not defined or empty."; return $null } # Changed to Write-Error
     $soapAction = "http://www.rlcarriers.com/GetRateQuote"
     $tnsNamespace = "http://www.rlcarriers.com/"
     $soapNamespace = "http://schemas.xmlsoap.org/soap/envelope/"
 
-    # Helper to escape XML special characters
-    function Escape-Xml ($string) { if ($null -eq $string) { return '' }; return [System.Security.SecurityElement]::Escape($string) }
+    # Escape-Xml function is now at script scope
 
     $soapRequestBody = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -250,7 +256,7 @@ function Invoke-RLApi {
      <tns:request>
        <tns:CustomerData>$(Escape-Xml $customerDataToUse)</tns:CustomerData>
        <tns:QuoteType>$(Escape-Xml $QuoteTypeToUse)</tns:QuoteType>
-       <tns:CODAmount>$CODAmountToUse</tns:CODAmount>
+       <tns:CODAmount>$($CODAmountToUse.ToString("F2"))</tns:CODAmount>
        <tns:Origin>
          <tns:City>$(Escape-Xml $OriginCityToUse)</tns:City>
          <tns:StateOrProvince>$(Escape-Xml $OriginStateToUse)</tns:StateOrProvince>
@@ -264,7 +270,7 @@ function Invoke-RLApi {
          <tns:CountryCode>$(Escape-Xml $DestinationCountryCodeToUse)</tns:CountryCode>
        </tns:Destination>
        <tns:Items>$itemsXmlSnippet</tns:Items>
-       <tns:DeclaredValue>$DeclaredValueToUse</tns:DeclaredValue>
+       <tns:DeclaredValue>$($DeclaredValueToUse.ToString("F2"))</tns:DeclaredValue>
        </tns:request>
    </tns:GetRateQuote>
  </soap:Body>
@@ -311,8 +317,11 @@ function Invoke-RLApi {
                     } catch { Write-Warning "RL Convert Fail for Tariff $($tariffNameForLog): Cannot convert rate '$totalChargeValue' to decimal. Error: $($_.Exception.Message)"; return $null }
                 } else {
                     # Check for specific errors returned by R+L if NET charge missing
-                    $errorMsgNode = $quoteDetails.SelectSingleNode("rl:Errors/rl:string", $nsManager)
-                    if($errorMsgNode){ Write-Warning "RL API Error in Response for Tariff $($tariffNameForLog): $($errorMsgNode.InnerText)" }
+                    $errorMsgNode = $quoteDetails.SelectSingleNode("rl:Errors/rl:string", $nsManager) # R+L returns errors in an array of strings
+                    if($errorMsgNode){
+                        $errorMessages = $quoteDetails.SelectNodes("rl:Errors/rl:string", $nsManager) | ForEach-Object {$_.InnerText}
+                        Write-Warning "RL API Error in Response for Tariff $($tariffNameForLog): $($errorMessages -join '; ')"
+                    }
                     else { Write-Warning "RL Resp Missing 'NET' charge for Tariff $tariffNameForLog. Check response XML." }
                     Write-Verbose "RL Response XML (No NET Charge - Tariff $tariffNameForLog): $($response.Content)"
                     return $null

@@ -2,11 +2,11 @@
 # Description: Configuration settings for the TMS Tool.
 
 # --- API Endpoints ---
-$script:centralApiUri = "https://api.cntl.com/api/ratequote" # Example, replace with actual
-$script:saiaApiUri = "https://api.saia.com/api/v1/ratequote"    # Example, replace with actual
-$script:rlApiUri = "http://www2.rlcarriers.com/freight/shipping/rate-quote.asmx" # Example, replace with actual R+L SOAP endpoint
-$script:averittApiUri = "https://api.averittexpress.com/rating/v1/rates" # Example, replace with actual
-$script:aaaCooperApiUri = "https://api2.aaacooper.com:8200/sapi30/wsGenEst" # AAA Cooper Endpoint
+$script:centralApiUri = 'https://client-api.centraltransport.com/api/v1/Quote/byDimensions'
+$script:saiaApiUri = "https://api.saia.com/rate-quote/webservice/ratequote/customer-api"
+$script:rlApiUri = "http://api.rlcarriers.com/1.0.3/RateQuoteService.asmx"
+$script:averittApiUri = "https://api.averittexpress.com/rate-quotes/dynamicpricing" 
+$script:aaaCooperApiUri = "https://api2.aaacooper.com:8200/sapi30/wsGenEst"
 
 # --- Default Folder Names (relative to script root) ---
 $script:defaultUserAccountsFolderName = "user_accounts"

@@ -113,13 +113,13 @@ function Run-CrossCarrierASPAnalysisGUI {
     param(
         [Parameter(Mandatory)][hashtable]$BrokerProfile,
         [Parameter(Mandatory)][hashtable]$SelectedCustomerProfile,
-        [Parameter(Mandatory)][string]$ReportsBaseFolder, # Not directly used for path, but good for context
-        [Parameter(Mandatory)][string]$UserReportsFolder, # User-specific report folder
+        [Parameter(Mandatory)][string]$ReportsBaseFolder, 
+        [Parameter(Mandatory)][string]$UserReportsFolder, 
         [Parameter(Mandatory)][hashtable]$AllCentralKeys,
         [Parameter(Mandatory)][hashtable]$AllSAIAKeys,
         [Parameter(Mandatory)][hashtable]$AllRLKeys,
         [Parameter(Mandatory)][hashtable]$AllAverittKeys,
-        [Parameter(Mandatory)][hashtable]$AllAAACooperKeys, # Added for AAA Cooper
+        [Parameter(Mandatory)][hashtable]$AllAAACooperKeys, 
         [Parameter(Mandatory)][decimal]$DesiredASPValue,
         [Parameter(Mandatory)][string]$CsvFilePath,
         [Parameter(Mandatory=$false)][bool]$ApplyMargins = $false,
@@ -134,9 +134,7 @@ function Run-CrossCarrierASPAnalysisGUI {
     $analysisTitle = if ($ASPFromHistory) { "Margin Analysis Based on History ASP for $($SelectedCustomerProfile.CustomerName)" } else { "ASP Cross-Carrier Margin Analysis for $($SelectedCustomerProfile.CustomerName)" }
     $reportTypeSuffix = if ($ASPFromHistory) { "MarginByHistory" } else { "MarginForASP" }
 
-    # --- Data Loading for all relevant carriers ---
     Write-Host "`nLoading and normalizing data for all carriers from '$CsvFilePath'..." -ForegroundColor Gray
-    # Ensure all normalization functions are loaded
     $requiredNormFuncs = @(
         "Load-And-Normalize-CentralData", "Load-And-Normalize-SAIAData",
         "Load-And-Normalize-RLData", "Load-And-Normalize-AverittData", "Load-And-Normalize-AAACooperData"
@@ -154,19 +152,17 @@ function Run-CrossCarrierASPAnalysisGUI {
     $averittShipmentData = Load-And-Normalize-AverittData -CsvPath $CsvFilePath
     $aaaCooperShipmentData = Load-And-Normalize-AAACooperData -CsvPath $CsvFilePath
 
-    # Check if any normalization failed critically
-    if (($null -eq $centralShipmentData) -or ($null -eq $saiaShipmentData) -or ($null -eq $rlShipmentData) -or ($null -eq $averittShipmentData) -or ($null -eq $aaaCooperShipmentData)) {
-         Write-Error "Failed to load/normalize data for one or more carriers (function returned null)."
-         # Add specific warnings for which carrier failed if desired
+    if (($null -eq $centralShipmentData -and $null -eq $saiaShipmentData -and $null -eq $rlShipmentData -and $null -eq $averittShipmentData -and $null -eq $aaaCooperShipmentData)) {
+         Write-Error "Failed to load/normalize data for ALL carriers."
          return $null
     }
     
     $allShipmentDataSets = @($centralShipmentData, $saiaShipmentData, $rlShipmentData, $averittShipmentData, $aaaCooperShipmentData)
-    $totalRows = ($allShipmentDataSets | ForEach-Object { $_.Count } | Measure-Object -Maximum).Maximum
+    $dataCounts = $allShipmentDataSets | ForEach-Object { if ($_) { $_.Count } else { 0 } } # Handle cases where a dataset might be null
+    $totalRows = ($dataCounts | Measure-Object -Maximum).Maximum
     if ($totalRows -eq 0) { Write-Warning "CSV resulted in 0 processable rows after normalization for all carriers."; return $null }
     Write-Host " -> Data loaded and normalized (target ${totalRows} rows, individual counts may vary)." -ForegroundColor Green
 
-    # --- Get Permitted Keys for the SELECTED CUSTOMER ---
     if (-not (Get-Command Get-PermittedKeys -ErrorAction SilentlyContinue)) { Write-Error "Get-PermittedKeys function not found."; return $null }
     $permittedCentral = Get-PermittedKeys -AllKeys $AllCentralKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedCentralKeys
     $permittedSAIA = Get-PermittedKeys -AllKeys $AllSAIAKeys -AllowedKeyNames $SelectedCustomerProfile.AllowedSAIAKeys
@@ -179,33 +175,36 @@ function Run-CrossCarrierASPAnalysisGUI {
         return $null
     }
 
-    # --- Initialize Results Storage ---
     $aspResults = [System.Collections.Generic.List[object]]::new()
-    $script:overallSkippedCount = 0 # Initialize in script scope to be accessible by helper
-    # Ensure all API invocation functions are loaded
+    $script:overallSkippedCount = 0 
     $requiredApiFuncs = @(
         "Invoke-CentralTransportApi", "Invoke-SAIAApi", "Invoke-RLApi",
         "Invoke-AverittApi", "Invoke-AAACooperApi"
     )
     foreach ($funcName in $requiredApiFuncs) {
         if (-not (Get-Command $funcName -ErrorAction SilentlyContinue)) {
-            Write-Error "Required API invocation function '$funcName' not found."
-            return $null
+            # Allow optional carriers to be missing their API functions
+            if (($funcName -eq "Invoke-AverittApi" -and $AllAverittKeys.Count -eq 0) -or `
+                ($funcName -eq "Invoke-AAACooperApi" -and $AllAAACooperKeys.Count -eq 0) ) {
+                Write-Warning "API invocation function '$funcName' not found, but no keys are configured for this carrier. Skipping."
+            } else {
+                Write-Error "Required API invocation function '$funcName' not found."
+                return $null
+            }
         }
     }
     
     $CurrentVerbosePreference = $VerbosePreference; $VerbosePreference = 'SilentlyContinue';
     try {
-        # Helper function to process a single carrier
         function Process-CarrierASP {
             param (
                 [string]$CarrierName,
                 [hashtable]$PermittedKeys,
                 [array]$ShipmentDataset,
-                [hashtable]$AllCarrierKeys, # For margin update later
-                [string]$CarrierKeyFolderPath # For margin update later
+                [hashtable]$AllCarrierKeys, 
+                [string]$CarrierKeyFolderPath 
             )
-            if ($PermittedKeys.Count -gt 0 -and $ShipmentDataset.Count -gt 0) {
+            if ($PermittedKeys.Count -gt 0 -and $ShipmentDataset -and $ShipmentDataset.Count -gt 0) { 
                 Write-Host "`n--- Processing $CarrierName Accounts for $($SelectedCustomerProfile.CustomerName) ---" -ForegroundColor Yellow
                 foreach ($keyName in ($PermittedKeys.Keys | Sort-Object)) {
                     $keyData = $PermittedKeys[$keyName]
@@ -214,18 +213,27 @@ function Run-CrossCarrierASPAnalysisGUI {
                     
                     foreach ($shipment in $ShipmentDataset) {
                         $costValue = $null
-                        # Dynamically call the correct Invoke function
-                        $invokeFunctionName = "Invoke-${CarrierName}Api"
-                        # Ensure correct function name for AAA Cooper if it differs (e.g., Invoke-AAACooperApi)
-                        # This assumes Invoke-AAACooperApi exists and is loaded.
                         
-                        # Construct parameters for the Invoke function
+                        # CORRECTED: Determine the correct function name, especially for Central Transport
+                        $invokeFunctionName = if ($CarrierName -eq "Central") {
+                                                "Invoke-CentralTransportApi"
+                                            } elseif ($CarrierName -eq "AAACooper") { # Ensure exact match for any other specific names
+                                                "Invoke-AAACooperApi"
+                                            } else {
+                                                "Invoke-${CarrierName}Api" 
+                                            }
+
+                        if (-not (Get-Command $invokeFunctionName -ErrorAction SilentlyContinue)) {
+                            Write-Warning "API function '$invokeFunctionName' for carrier '$CarrierName' not found. Skipping this carrier for this shipment."
+                            $apiSkippedCount++; continue
+                        }
+                        
                         $invokeParams = @{ KeyData = $keyData }
-                        if ($CarrierName -eq "Central") { $invokeParams.ShipmentData = $shipment }
+                        if ($CarrierName -eq "Central") { $invokeParams.ShipmentData = $shipment } 
                         elseif ($CarrierName -eq "SAIA") { $invokeParams.OriginZip = $shipment.OriginZip; $invokeParams.DestinationZip = $shipment.DestinationZip; $invokeParams.OriginCity = $shipment.OriginCity; $invokeParams.OriginState = $shipment.OriginState; $invokeParams.DestinationCity = $shipment.DestinationCity; $invokeParams.DestinationState = $shipment.DestinationState; $invokeParams.Details = $shipment.details }
                         elseif ($CarrierName -eq "RL") { $invokeParams.OriginZip = $shipment.OriginZip; $invokeParams.DestinationZip = $shipment.DestinationZip; $invokeParams.Commodities = $shipment.Commodities; $invokeParams.ShipmentDetails = $shipment }
-                        elseif ($CarrierName -eq "Averitt") { $invokeParams.ShipmentData = $shipment }
-                        elseif ($CarrierName -eq "AAACooper") { $invokeParams.ShipmentData = $shipment } # Pass the normalized shipment data
+                        elseif ($CarrierName -eq "Averitt") { $invokeParams.ShipmentData = $shipment } 
+                        elseif ($CarrierName -eq "AAACooper") { $invokeParams.ShipmentData = $shipment } 
                         else { Write-Warning "Invoke function parameters not defined for $CarrierName"; $apiSkippedCount++; continue }
 
                         try {
@@ -234,7 +242,7 @@ function Run-CrossCarrierASPAnalysisGUI {
 
                         if ($costValue -eq $null) { $apiSkippedCount++; continue }
                         $processedCount++; $totalCostValue += $costValue
-                    } # End foreach shipment
+                    } 
 
                     $avgCost = 0.0; $reqMargin = $null;
                     if ($processedCount -gt 0) {
@@ -244,34 +252,32 @@ function Run-CrossCarrierASPAnalysisGUI {
                             catch { Write-Warning "Error calculating margin for ${keyName} ($CarrierName): $($_.Exception.Message)"}
                         }
                     }
-                    $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = $CarrierName; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount; KeysFolderPath = $CarrierKeyFolderPath; AllKeysRef = $AllCarrierKeys }); # Store folder path for margin update
+                    $aspResults.Add([PSCustomObject]@{ Account = $keyName; Carrier = $CarrierName; AvgCost = $avgCost; RequiredMargin = $reqMargin; Processed = $processedCount; Skipped = $apiSkippedCount; KeysFolderPath = $CarrierKeyFolderPath; AllKeysRef = $AllCarrierKeys }); 
                     if ($processedCount -gt 0) { Write-Host " -> Avg Cost: $($avgCost.ToString('C2')). Required Margin: $(if($reqMargin -ne $null){'{0:N2}%' -f $reqMargin}else{'N/A'}) (${processedCount} processed, ${apiSkippedCount} API skips)" -ForegroundColor Green }
                     else { Write-Warning " -> No shipments processed successfully via API for $CarrierName account '${keyName}'. (${apiSkippedCount} API skips)"; }
-                    $script:overallSkippedCount += $apiSkippedCount # Use script scope for overallSkippedCount
-                } # End foreach key
-            } elseif ($PermittedKeys.Count -gt 0 -and $ShipmentDataset.Count -eq 0) {
+                    $script:overallSkippedCount += $apiSkippedCount 
+                } 
+            } elseif ($PermittedKeys.Count -gt 0 -and ($null -eq $ShipmentDataset -or $ShipmentDataset.Count -eq 0)) { 
                 Write-Warning "`nNo processable $CarrierName data rows from CSV for $($SelectedCustomerProfile.CustomerName), though permitted keys exist."
             } else { Write-Host "`nNo permitted $CarrierName accounts for $($SelectedCustomerProfile.CustomerName)." -ForegroundColor Gray }
-        } # End Process-CarrierASP
+        } 
 
-        # Process each carrier
         Process-CarrierASP -CarrierName "Central" -PermittedKeys $permittedCentral -ShipmentDataset $centralShipmentData -AllCarrierKeys $AllCentralKeys -CarrierKeyFolderPath $script:centralKeysFolderPath
         Process-CarrierASP -CarrierName "SAIA" -PermittedKeys $permittedSAIA -ShipmentDataset $saiaShipmentData -AllCarrierKeys $AllSAIAKeys -CarrierKeyFolderPath $script:saiaKeysFolderPath
         Process-CarrierASP -CarrierName "RL" -PermittedKeys $permittedRL -ShipmentDataset $rlShipmentData -AllCarrierKeys $AllRLKeys -CarrierKeyFolderPath $script:rlKeysFolderPath
         Process-CarrierASP -CarrierName "Averitt" -PermittedKeys $permittedAveritt -ShipmentDataset $averittShipmentData -AllCarrierKeys $AllAverittKeys -CarrierKeyFolderPath $script:averittKeysFolderPath
-        Process-CarrierASP -CarrierName "AAACooper" -PermittedKeys $permittedAAACooper -ShipmentDataset $aaaCooperShipmentData -AllCarrierKeys $AllAAACooperKeys -CarrierKeyFolderPath $script:aaaCooperKeysFolderPath # Process AAA Cooper
+        Process-CarrierASP -CarrierName "AAACooper" -PermittedKeys $permittedAAACooper -ShipmentDataset $aaaCooperShipmentData -AllCarrierKeys $AllAAACooperKeys -CarrierKeyFolderPath $script:aaaCooperKeysFolderPath 
 
     } finally {
         $VerbosePreference = $CurrentVerbosePreference
     }
 
-    # --- Prepare Report Content ---
     $reportContent = [System.Collections.Generic.List[string]]::new()
     $reportContent.Add($analysisTitle); $reportContent.Add("=" * $analysisTitle.Length)
     $reportContent.Add("Date: $(Get-Date), Broker: $($BrokerProfile.Username), Input CSV: $(Split-Path $CsvFilePath -Leaf)")
     $reportContent.Add((" {0,-25}: {1:C2}" -f $aspDisplayLabel, $DesiredASPValue))
     $reportContent.Add("Total Unique CSV Rows Available (approx based on largest carrier set): ${totalRows}")
-    $reportContent.Add("Total API Call Skips (sum across all accounts): ${overallSkippedCount}")
+    $reportContent.Add("Total API Call Skips (sum across all accounts): ${script:overallSkippedCount}") 
     $reportContent.Add("")
     if ($aspResults.Count -gt 0) {
         $formattedTableOutput = ($aspResults | Sort-Object -Property Carrier, Account | Format-Table Carrier, Account, @{N='Avg Cost';E={if ($_.AvgCost -ne $null) {$_.AvgCost.ToString("C2")} else {'N/A'}}}, @{N='Required Margin %';E={if($_.RequiredMargin -ne $null){$_.RequiredMargin.ToString("N2") + "%"}else{"N/A"}}}, Processed, @{N='API Skips';E={$_.Skipped}} -AutoSize | Out-String)
@@ -282,7 +288,6 @@ function Run-CrossCarrierASPAnalysisGUI {
     } else { $reportContent.Add("No results generated (no permitted keys or no data processed).") }
     $reportContent.Add("-------------------------------------------------")
 
-    # --- Apply Margins if Requested ---
     if ($ApplyMargins -and $aspResults.Count -gt 0) {
         Write-Host "`nApplying calculated margins..." -ForegroundColor Yellow
         $reportContent.Add(""); $reportContent.Add("--- Margin Update Attempt Summary ---")
@@ -313,9 +318,8 @@ function Run-CrossCarrierASPAnalysisGUI {
          $reportContent.Add(""); $reportContent.Add("NOTE: Apply Margins requested, but no results were generated to apply from.")
     }
 
-    # --- Save Report ---
     if (-not (Get-Command Get-ReportPath -ErrorAction SilentlyContinue)) { Write-Error "Get-ReportPath function not found."; return $null }
-    $customerNameSafe = $SelectedCustomerProfile.CustomerName -replace '[^a-zA-Z0-9.-]', '_' # Sanitize customer name for filename
+    $customerNameSafe = $SelectedCustomerProfile.CustomerName -replace '[^a-zA-Z0-9.-]', '_' 
     $reportFilePath = Get-ReportPath -BaseDir $UserReportsFolder -Username $BrokerProfile.Username -Carrier 'CrossCarrier' -ReportType $reportTypeSuffix -FilePrefix $customerNameSafe
     
     if ($reportFilePath) {
@@ -335,7 +339,7 @@ function Run-MarginsByHistoryAnalysisGUI {
         [Parameter(Mandatory)][hashtable]$AllSAIAKeys,
         [Parameter(Mandatory)][hashtable]$AllRLKeys,
         [Parameter(Mandatory)][hashtable]$AllAverittKeys,
-        [Parameter(Mandatory)][hashtable]$AllAAACooperKeys, # Added for AAA Cooper
+        [Parameter(Mandatory)][hashtable]$AllAAACooperKeys,
         [Parameter(Mandatory)][string]$CsvFilePath,
         [Parameter(Mandatory=$false)][bool]$ApplyMargins = $false
     )
@@ -349,7 +353,6 @@ function Run-MarginsByHistoryAnalysisGUI {
         
         $header = $rawData[0].PSObject.Properties.Name
         $bookedPriceColumnName = $null
-        # Expanded list of potential column names for booked price
         $potentialPriceColumns = @('Booked Price', 'BookedPrice', 'Price', 'FinalQuotedPrice', 'Average Selling Price', 'CustomerRate', 'Sold For', 'Revenue')
         foreach($colName in $potentialPriceColumns){
             if($header -contains $colName){
@@ -363,9 +366,9 @@ function Run-MarginsByHistoryAnalysisGUI {
         foreach ($row in $rawData) {
             if ($row.$bookedPriceColumnName -ne $null -and $row.$bookedPriceColumnName -ne "") {
                 try {
-                    $priceString = $row.$bookedPriceColumnName -replace '[$,]' # Remove $ and ,
+                    $priceString = $row.$bookedPriceColumnName -replace '[$,]' 
                     $bookedPrice = [decimal]$priceString
-                    if ($bookedPrice -gt 0) { # Ensure positive price
+                    if ($bookedPrice -gt 0) { 
                         $totalBookedPrice += $bookedPrice
                         $validBookedPriceCount++
                     }
@@ -379,22 +382,52 @@ function Run-MarginsByHistoryAnalysisGUI {
         Write-Host " -> Average Booked Price: $($averageBookedPrice.ToString('C2')) (${validBookedPriceCount} valid rows)" -ForegroundColor Green 
     } catch { Write-Error "Error processing History CSV '${CsvFilePath}': $($_.Exception.Message)"; return $null } 
 
+    if ($null -eq $averageBookedPrice) {
+        Write-Error "Failed to calculate average booked price. Cannot proceed with CrossCarrierASPAnalysis."
+        return $null
+    }
+
+    Write-Host "DEBUG: In Run-MarginsByHistoryAnalysisGUI, about to call Run-CrossCarrierASPAnalysisGUI." -ForegroundColor Magenta
+    $TargetFunction = "Run-CrossCarrierASPAnalysisGUI"
+    $CmdInfo = Get-Command $TargetFunction -ErrorAction SilentlyContinue
+    if ($CmdInfo) {
+        Write-Host "DEBUG: Found command '$TargetFunction'. Type: $($CmdInfo.CommandType)" -ForegroundColor Magenta
+        if ($CmdInfo.Parameters) {
+            Write-Host "DEBUG: Parameters for '$TargetFunction':" -ForegroundColor Magenta
+            $CmdInfo.Parameters.Values | ForEach-Object { Write-Host "  - $($_.Name) (Type: $($_.ParameterType.FullName), Mandatory: $($_.Attributes | Where-Object {$_.TypeId.Name -eq 'ParameterAttribute'} | ForEach-Object {$_.Mandatory}))" -ForegroundColor Magenta }
+            if ($CmdInfo.Parameters.ContainsKey("DesiredASPValue")) {
+                Write-Host "DEBUG: Parameter 'DesiredASPValue' IS DEFINED for '$TargetFunction'." -ForegroundColor Green
+            } else {
+                Write-Host "DEBUG: Parameter 'DesiredASPValue' IS NOT DEFINED for '$TargetFunction'." -ForegroundColor Red
+            }
+        } else {
+            Write-Host "DEBUG: No parameters found for '$TargetFunction'." -ForegroundColor Red
+        }
+    } else {
+        Write-Host "DEBUG: Command '$TargetFunction' NOT FOUND." -ForegroundColor Red
+    }
+    Write-Host "DEBUG: Value of `$averageBookedPrice to be passed as DesiredASPValue: $averageBookedPrice (Type: $($averageBookedPrice.GetType().FullName))" -ForegroundColor Magenta
+    Write-Host "DEBUG: Value of `$CsvFilePath to be passed: $CsvFilePath (Type: $($CsvFilePath.GetType().FullName))" -ForegroundColor Magenta
+
     if (-not (Get-Command Run-CrossCarrierASPAnalysisGUI -ErrorAction SilentlyContinue)) { Write-Error "Run-CrossCarrierASPAnalysisGUI function not found."; return $null }
     
-    # Pass all key collections to the CrossCarrierASPAnalysis function
-    $reportPath = Run-CrossCarrierASPAnalysisGUI -BrokerProfile $BrokerProfile `
-                                                 -SelectedCustomerProfile $SelectedCustomerProfile `
-                                                 -ReportsBaseFolder $ReportsBaseFolder `
-                                                 -UserReportsFolder $UserReportsFolder `
-                                                 -AllCentralKeys $AllCentralKeys `
-                                                 -AllSAIAKeys $AllSAIAKeys `
-                                                 -AllRLKeys $AllRLKeys `
-                                                 -AllAverittKeys $AllAverittKeys `
-                                                 -AllAAACooperKeys $AllAAACooperKeys ` # Pass AAA Cooper keys
-                                                 -DesiredASPValue $averageBookedPrice `
-                                                 -CsvFilePath $CsvFilePath ` 
-                                                 -ApplyMargins $ApplyMargins `
-                                                 -ASPFromHistory $true 
+    $crossCarrierParams = @{
+        BrokerProfile             = $BrokerProfile
+        SelectedCustomerProfile   = $SelectedCustomerProfile
+        ReportsBaseFolder         = $ReportsBaseFolder
+        UserReportsFolder         = $UserReportsFolder
+        AllCentralKeys            = $AllCentralKeys
+        AllSAIAKeys               = $AllSAIAKeys
+        AllRLKeys                 = $AllRLKeys
+        AllAverittKeys            = $AllAverittKeys
+        AllAAACooperKeys          = $AllAAACooperKeys
+        DesiredASPValue           = [decimal]$averageBookedPrice 
+        CsvFilePath               = $CsvFilePath
+        ApplyMargins              = $ApplyMargins
+        ASPFromHistory            = $true
+    }
+    Write-Host "DEBUG: Calling Run-CrossCarrierASPAnalysisGUI with splatted parameters..." -ForegroundColor Yellow
+    $reportPath = Run-CrossCarrierASPAnalysisGUI @crossCarrierParams
 
     return $reportPath 
 }
