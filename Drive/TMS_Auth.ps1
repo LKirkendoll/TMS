@@ -104,9 +104,8 @@ function Load-AllCustomerProfiles {
     if ($profileFiles) {
         foreach ($file in $profileFiles) {
             $customerNameFromFile = $file.BaseName
-            Write-Verbose "Processing customer file '$($file.Name)'..." #-ForegroundColor Magenta
+            Write-Verbose "Processing customer file '$($file.Name)'..."
 
-            # <<< MODIFICATION: Pre-initialize $profileData with expected Allowed*Keys as empty arrays >>>
             $profileData = [hashtable]@{
                 "CustomerFileName"   = $customerNameFromFile
                 "CustomerName"       = $customerNameFromFile # Default CustomerName to filename; can be overridden by file content
@@ -114,9 +113,9 @@ function Load-AllCustomerProfiles {
                 "AllowedSAIAKeys"    = @()
                 "AllowedRLKeys"      = @()
                 "AllowedAverittKeys" = @()
-                # Add any other fields that are consistently present or should default
+                "AllowedAAACooperKeys" = @() # CORRECTED: Added AllowedAAACooperKeys initialization
             }
-            # Write-Host "DEBUG Load-AllCustomerProfiles: Initialized profileData for '$customerNameFromFile'. Keys: $($profileData.Keys -join ', ')" #-ForegroundColor Magenta
+            Write-Verbose "DEBUG Load-AllCustomerProfiles: Initialized profileData for '$customerNameFromFile'. Keys: $($profileData.Keys -join ', ')"
 
             try {
                 # --- Line-by-line parsing ---
@@ -155,8 +154,8 @@ function Load-AllCustomerProfiles {
                 } # End Get-Content | ForEach-Object
 
                 # --- Post-parsing checks/cleanup (Optional but ensures array type) ---
-                # This loop ensures Allowed*Keys are always arrays, even if parsing somehow yielded a scalar
-                foreach($keyTypeForArrayCheck in @('AllowedCentralKeys', 'AllowedSAIAKeys', 'AllowedRLKeys', 'AllowedAverittKeys')) {
+                # CORRECTED: Added 'AllowedAAACooperKeys' to this loop
+                foreach($keyTypeForArrayCheck in @('AllowedCentralKeys', 'AllowedSAIAKeys', 'AllowedRLKeys', 'AllowedAverittKeys', 'AllowedAAACooperKeys')) {
                     # Check if the key exists AND if its value is NOT already an array
                     if ($profileData.ContainsKey($keyTypeForArrayCheck) -and -not ($profileData[$keyTypeForArrayCheck] -is [array])) {
                         Write-Warning "Value for $keyTypeForArrayCheck in profile '$($profileData.CustomerName)' was not an array after parsing. Converting."
@@ -168,14 +167,13 @@ function Load-AllCustomerProfiles {
                             $profileData[$keyTypeForArrayCheck] = @()
                         }
                     }
-                    # If key doesn't exist, pre-initialization already set it to @()
-                    # If key exists and IS an array, do nothing.
+                    # If key doesn't exist, pre-initialization (now including AllowedAAACooperKeys) ensures it is @()
                 }
 
                 # --- Store the profile ---
                 $customerKeyForStorage = $profileData.CustomerName # Use the potentially overridden CustomerName
-                # Write-Host "DEBUG Load-AllCustomerProfiles: Storing profile for '$customerNameFromFile' under key '$customerKeyForStorage'." #-ForegroundColor Magenta
-                # Write-Host "DEBUG Load-AllCustomerProfiles: Final keys in profileData for '$customerKeyForStorage': $($profileData.Keys -join ', ')" #-ForegroundColor Magenta
+                Write-Verbose "DEBUG Load-AllCustomerProfiles: Storing profile for '$customerNameFromFile' under key '$customerKeyForStorage'."
+                Write-Verbose "DEBUG Load-AllCustomerProfiles: Final keys in profileData for '$customerKeyForStorage': $($profileData.Keys -join ', ')"
                 $allProfiles[$customerKeyForStorage] = $profileData
                 Write-Verbose "Load successful for customer profile: $customerKeyForStorage"
 
