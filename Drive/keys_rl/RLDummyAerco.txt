@@ -1,4 +1,0 @@
-﻿Name=RLDummyAerco
-APIKey=YtMiZGYDUzZiJkNzAtNmI5NS00MjBjLWIzNTMTlhZ1ODMTJ2C
-MarginPercent=50.0
-

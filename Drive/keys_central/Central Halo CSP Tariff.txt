@@ -1,4 +1,0 @@
-﻿Name=Central Halo CSP Tariff
-accessCode=c3072122-f935-46d3-8eff-265ef6b5c
-customerNumber=76140602601
-MarginPercent=69.0

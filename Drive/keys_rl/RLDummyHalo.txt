@@ -1,3 +1,0 @@
-Name=RLDummyHalo
-APIKey=YtMiZGYDUzZiJkNzAtNmI5NS00MjBjLWIzNTMTlhZ1ODMTJ2C
-MarginPercent=65

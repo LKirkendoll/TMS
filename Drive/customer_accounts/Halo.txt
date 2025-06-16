@@ -1,4 +1,0 @@
-AllowedCentralKeys=Central Halo CSP Tariff,Central Halo Blanket Tariff
-AllowedSAIAKeys=SAIA Halo Blanket Tariff,SAIA Halo Dummy Tariff
-AllowedRLKeys=RLBlanketHalo,RLDummyHalo
-AllowedAverittKeys=AverittMainTariffHalo

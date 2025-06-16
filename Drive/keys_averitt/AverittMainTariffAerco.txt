@@ -1,4 +1,0 @@
-﻿Name=AverittMainTariffAerco
-APIKey=a6ace4177d55403cb78a42ab2c5762b7
-MarginPercent=65.0
-AccountNumber=1418543

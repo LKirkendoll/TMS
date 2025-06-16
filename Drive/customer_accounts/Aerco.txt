@@ -1,5 +1,0 @@
-AllowedCentralKeys=Central Aerco CSP Tariff,Central Aerco Blanket Tariff
-AllowedSAIAKeys=SAIA Aerco Blanket Tariff,SAIA Aerco Dummy Tariff
-AllowedRLKeys=RLBlanketAerco,RLDummyAerco
-AllowedAverittKeys=AverittMainTariffAerco
-AllowedAAACooperKeys=AAABlanketAerco
